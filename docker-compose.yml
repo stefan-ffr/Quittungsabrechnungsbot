@@ -1,0 +1,16 @@
+services:
+  quittungsbot:
+    build: .
+    container_name: quittungsbot
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ALLOWED_CHAT_IDS=${ALLOWED_CHAT_IDS}
+      - DATABASE_PATH=/data/receipts.db
+      - UPLOAD_PATH=/data/uploads
+    volumes:
+      - quittungsbot_data:/data
+
+volumes:
+  quittungsbot_data:
