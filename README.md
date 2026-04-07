@@ -30,15 +30,17 @@ Telegram-Bot zur Quittungserfassung per Foto/PDF mit KI-gestützter Positionserk
 
 ## Installation
 
-### One-Liner (Debian/Ubuntu)
+### One-Liner (Debian/Ubuntu / Proxmox LXC)
 
-Installiert Docker, richtet die Konfiguration ein und startet den Bot:
+Installiert Docker, richtet die Konfiguration ein und startet den Bot. Funktioniert auf jedem Debian/Ubuntu-System, auch in Proxmox LXC-Containern.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/stefan-ffr/Quittungsabrechnungsbot/main/setup.sh | bash
 ```
 
 Das Script führt interaktiv durch die Einrichtung (Telegram Token, AI Provider, Chat-IDs).
+
+> **Proxmox LXC:** Der Container muss als **unprivileged** mit aktiviertem **Nesting** (`Features → nesting=1`) erstellt werden, damit Docker innerhalb des LXC funktioniert. Empfohlen: Debian 12 oder Ubuntu 22.04 Template, mindestens 512 MB RAM und 4 GB Disk.
 
 ### Manuell
 
