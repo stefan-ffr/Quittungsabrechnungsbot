@@ -1,6 +1,7 @@
 services:
   quittungsbot:
-    build: .
+    image: ghcr.io/stefan-ffr/quittungsabrechnungsbot:latest
+    # build: .  # Für lokales Bauen auskommentieren
     container_name: quittungsbot
     restart: unless-stopped
     environment:
