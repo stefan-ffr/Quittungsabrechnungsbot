@@ -10,6 +10,22 @@ echo "  Quittungsbot – Installer"
 echo "═══════════════════════════════════════"
 echo ""
 
+# ── LXC-Erkennung & Prüfung ──
+if [ -f /proc/1/environ ] && grep -qa container=lxc /proc/1/environ 2>/dev/null; then
+    echo "📦 Proxmox LXC erkannt"
+    # Prüfe ob nesting aktiv ist
+    if ! grep -q "devices" /proc/self/cgroup 2>/dev/null && [ ! -d /sys/fs/cgroup/devices ]; then
+        echo ""
+        echo "⚠️  Nesting scheint nicht aktiviert zu sein!"
+        echo "   In Proxmox: LXC → Options → Features → nesting=1,keyctl=1"
+        echo "   Oder in /etc/pve/lxc/<ID>.conf:"
+        echo "     features: nesting=1,keyctl=1"
+        echo ""
+        read -rp "  Trotzdem fortfahren? [j/N] " CONTINUE
+        [[ "$CONTINUE" =~ ^[jJyY]$ ]] || exit 1
+    fi
+fi
+
 # ── Docker installieren falls nötig ──
 if ! command -v docker &>/dev/null; then
     echo "📦 Docker wird installiert..."
@@ -18,6 +34,20 @@ if ! command -v docker &>/dev/null; then
     echo "✅ Docker installiert"
 else
     echo "✅ Docker bereits vorhanden"
+fi
+
+# ── Docker-Funktionstest ──
+if ! docker info &>/dev/null; then
+    echo ""
+    echo "❌ Docker läuft nicht oder hat keine Berechtigung."
+    echo ""
+    echo "   Falls Proxmox LXC:"
+    echo "   1. Features: nesting=1,keyctl=1"
+    echo "   2. Bei unprivileged LXC zusätzlich in /etc/pve/lxc/<ID>.conf:"
+    echo "      lxc.apparmor.profile: unconfined"
+    echo "   3. LXC neustarten und Script erneut ausführen"
+    echo ""
+    exit 1
 fi
 
 # ── Projektverzeichnis anlegen ──

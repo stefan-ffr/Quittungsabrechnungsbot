@@ -40,7 +40,21 @@ curl -fsSL https://raw.githubusercontent.com/stefan-ffr/Quittungsabrechnungsbot/
 
 Das Script führt interaktiv durch die Einrichtung (Telegram Token, AI Provider, Chat-IDs).
 
-> **Proxmox LXC:** Der Container muss als **unprivileged** mit aktiviertem **Nesting** (`Features → nesting=1`) erstellt werden, damit Docker innerhalb des LXC funktioniert. Empfohlen: Debian 12 oder Ubuntu 22.04 Template, mindestens 512 MB RAM und 4 GB Disk.
+> **Proxmox LXC Setup:**
+>
+> 1. LXC erstellen: Debian 12 oder Ubuntu 22.04 Template, mind. 512 MB RAM, 4 GB Disk
+> 2. LXC-Optionen in Proxmox setzen (vor dem Start):
+>    - `Features → nesting=1, keyctl=1`
+>    - Oder in `/etc/pve/lxc/<ID>.conf`:
+>      ```
+>      features: nesting=1,keyctl=1
+>      ```
+> 3. Für **unprivileged** LXCs zusätzlich in der LXC-Config:
+>    ```
+>    lxc.apparmor.profile: unconfined
+>    ```
+>    Alternativ: **privileged** LXC verwenden (einfacher, nur `nesting=1` nötig)
+> 4. LXC starten und Setup-Script ausführen
 
 ### Manuell
 
