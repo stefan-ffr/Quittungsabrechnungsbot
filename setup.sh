@@ -52,14 +52,6 @@ EOF
     echo "✅ .env erstellt"
 fi
 
-# ── Bei ghcr.io einloggen ──
-echo ""
-echo "🔐 GitHub Container Registry Login:"
-echo "   (Benötigt einen GitHub Token mit read:packages Berechtigung)"
-echo "   Token erstellen: https://github.com/settings/tokens/new?scopes=read:packages"
-echo ""
-docker login ghcr.io
-
 # ── Container starten ──
 echo ""
 echo "🚀 Starte Container..."
