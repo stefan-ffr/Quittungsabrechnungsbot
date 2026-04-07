@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(tar -xzvf quittungsbot.tar.gz)"
-    ]
-  }
-}
