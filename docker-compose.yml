@@ -4,10 +4,8 @@ services:
     # build: .  # Für lokales Bauen auskommentieren
     container_name: quittungsbot
     restart: unless-stopped
+    env_file: .env
     environment:
-      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - ALLOWED_CHAT_IDS=${ALLOWED_CHAT_IDS}
       - DATABASE_PATH=/data/receipts.db
       - UPLOAD_PATH=/data/uploads
     volumes:
