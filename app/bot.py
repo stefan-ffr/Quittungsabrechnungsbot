@@ -626,13 +626,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             pid = int(who)
             pname = p_map.get(pid, "?")
-            session.update({"payer_id": pid, "payer_name": pname, "stage": "my_share_input"})
+            session.update({"payer_id": pid, "payer_name": pname, "stage": "assign_method"})
             sessions[chat_id] = session
             db.update_receipt_payer(session["receipt_id"], pid, 0.0)
             await query.edit_message_text(
                 f"💳 *{pname}* hat {cur} {total:.2f} gezahlt.\n\n"
-                f"Wie viel ist *dein Anteil*?\n"
-                f"_(Betrag eingeben, z.B. `{total/2:.2f}` – oder `0`)_",
+                f"*Wem werden die Kosten zugewiesen?*\n"
+                f"_(Was nicht zugewiesen wird = dein Anteil)_",
+                reply_markup=_assign_start_kbd(payer_is_me=False),
                 parse_mode="Markdown"
             )
         return
@@ -821,8 +822,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         stage = session.get("stage")
         if stage == "geld_note":
             await _save_geld(ctx, chat_id, session, note="")
-        elif stage == "my_share_note":
-            await _show_assign_after_share(ctx, chat_id, session)
         return
 
 
@@ -937,40 +936,25 @@ async def _finish_assignment(query, ctx: ContextTypes.DEFAULT_TYPE,
     sessions.pop(chat_id, None)
     payer_name  = session.get("payer_name", "ich")
     cur         = session.get("data", {}).get("currency", CURRENCY) if session.get("data") else CURRENCY
-    total       = sum(i["amount"] for i in items)
-    my_share    = session.get("my_share", 0.0)
+    total       = session.get("data", {}).get("total") or sum(i["amount"] for i in items)
     payer_is_me = session.get("payer_id") is None
 
     if payer_is_me:
         msg = (f"✅ *{len(items)} Positionen* ({cur} {total:.2f}) zugewiesen.\n"
                f"💳 Bezahlt von: *dir*")
     else:
+        # my_share = total - was anderen zugewiesen wurde
+        assigned = db.get_total_assigned(session["receipt_id"])
+        my_share = round(max(total - assigned, 0), 2)
+        db.update_receipt_payer(session["receipt_id"], session["payer_id"], my_share)
         msg = (f"✅ *{len(items)} Positionen* zugewiesen.\n"
                f"💳 Bezahlt von: *{payer_name}*\n"
-               + (f"📌 Dein Anteil: {cur} {my_share:.2f} gebucht" if my_share > 0 else ""))
+               f"📌 Dein Anteil: {cur} {my_share:.2f}")
 
     await query.edit_message_text(msg, parse_mode="Markdown")
     await _send(ctx, chat_id, "Gespeichert. /saldo für Übersicht.", set_active=False)
 
 
-async def _show_assign_after_share(ctx: ContextTypes.DEFAULT_TYPE,
-                                   chat_id: int, session: dict):
-    items    = session.get("items", [])
-    pname    = session.get("payer_name", "?")
-    cur      = session.get("data", {}).get("currency", CURRENCY)
-    total    = session.get("data", {}).get("total") or sum(i["amount"] for i in items)
-    my_share = session.get("my_share", 0.0)
-    others   = round(total - my_share, 2)
-    session["stage"] = "assign_method"
-    sessions[chat_id] = session
-
-    text = (
-        f"📌 Dein Anteil: *{cur} {my_share:.2f}* bei *{pname}* gebucht.\n\n"
-        + (f"Noch *{cur} {others:.2f}* aufteilen:\n" if others > 0.01 else "")
-        + "\n*Wer hat was konsumiert?*"
-    )
-    await _send(ctx, chat_id, text,
-                inline=_assign_start_kbd(payer_is_me=False))
 
 
 async def _save_geld(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int,
@@ -1071,30 +1055,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         sessions[chat_id] = session
         await _reply(update, ctx, f"✅ *{name}* hinzugefügt.")
         await _rebuild_person_keyboard(ctx, chat_id, session, prev_stage)
-        return
-
-    if session.get("stage") == "my_share_input":
-        try:
-            my_share = float(raw)
-            if my_share < 0: raise ValueError
-        except ValueError:
-            await update.message.reply_text("❌ Bitte Zahl eingeben (z.B. `25.00`):",
-                                            parse_mode="Markdown")
-            return
-        session.update({"my_share": my_share, "stage": "my_share_note"})
-        sessions[chat_id] = session
-        db.update_receipt_payer(session["receipt_id"], session["payer_id"], my_share)
-        await update.message.reply_text(
-            f"📌 Dein Anteil: *{CURRENCY} {my_share:.2f}* – gebucht.\n\nNotiz? _(optional)_",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⏩ Ohne Notiz", callback_data="note_skip")]
-            ])
-        )
-        return
-
-    if session.get("stage") == "my_share_note":
-        await _show_assign_after_share(ctx, chat_id, session)
         return
 
     if session.get("stage") == "geld_amount":

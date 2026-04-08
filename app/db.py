@@ -233,6 +233,19 @@ def get_items_for_receipt(receipt_id: int) -> list[sqlite3.Row]:
     return rows
 
 
+def get_total_assigned(receipt_id: int) -> float:
+    """Summe aller Zuweisungen für eine Quittung."""
+    conn = get_conn()
+    row = conn.execute("""
+        SELECT COALESCE(SUM(ia.share_amount), 0) as total
+        FROM item_assignments ia
+        JOIN items i ON i.id = ia.item_id
+        WHERE i.receipt_id = ?
+    """, (receipt_id,)).fetchone()
+    conn.close()
+    return row["total"]
+
+
 def delete_receipt(receipt_id: int) -> None:
     conn = get_conn()
     conn.execute("DELETE FROM receipts WHERE id=?", (receipt_id,))
@@ -316,7 +329,7 @@ def get_balances() -> list[dict]:
         GROUP BY ia.person_id
     """).fetchall()
 
-    # Was ich Personen schulde (sie haben gezahlt, my_share > 0)
+    # Was ich Personen schulde (sie haben gezahlt, my_share wird automatisch berechnet)
     i_owe = conn.execute("""
         SELECT payer_id, SUM(my_share) as total
         FROM receipts
