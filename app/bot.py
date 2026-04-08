@@ -51,8 +51,8 @@ def _my_person_id(chat_id: int) -> int | None:
 
 KBD_IDLE = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("💸 Zahlung buchen"), KeyboardButton("💰 Saldo")],
-        [KeyboardButton("📋 Kontoauszug"),    KeyboardButton("🧾 Quittungen")],
+        [KeyboardButton("💸 Zahlung buchen"), KeyboardButton("➕ Posten")],
+        [KeyboardButton("💰 Saldo"),          KeyboardButton("🧾 Quittungen")],
         [KeyboardButton("👥 Personen"),        KeyboardButton("❌ Abbrechen")],
     ],
     resize_keyboard=True,
@@ -168,6 +168,7 @@ def _fmt_balance(b: dict) -> str:
 
 REPLY_TRIGGERS = {
     "💸 Zahlung buchen": "geld",
+    "➕ Posten":         "posten",
     "💰 Saldo":          "saldo",
     "📋 Kontoauszug":    "detail",
     "🧾 Quittungen":     "quittungen",
@@ -395,6 +396,14 @@ async def cmd_loeschen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ]),
         set_active=True,
     )
+
+
+async def cmd_posten(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _auth(update): return
+    sessions[update.effective_chat.id] = {"stage": "posten_desc"}
+    await _reply(update, ctx,
+        "➕ *Manueller Posten*\n\n📝 Beschreibung eingeben (z.B. _Pizza bestellt_):",
+        set_active=True)
 
 
 async def cmd_abbrechen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1144,6 +1153,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.args = []
         handlers = {
             "geld":       cmd_geld,
+            "posten":     cmd_posten,
             "saldo":      cmd_saldo,
             "detail":     cmd_detail,
             "quittungen": cmd_quittungen,
@@ -1166,6 +1176,49 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         db.add_person(name)
         sessions.pop(chat_id, None)
         await _reply(update, ctx, f"✅ *{name}* hinzugefügt.", set_active=False)
+        return
+
+    # ── Manueller Posten: Beschreibung
+    if session.get("stage") == "posten_desc":
+        session.update({"posten_desc": text, "stage": "posten_amount"})
+        sessions[chat_id] = session
+        await _reply(update, ctx, f"📝 *{text}*\n\n💰 Betrag eingeben (z.B. `25.50`):")
+        return
+
+    # ── Manueller Posten: Betrag
+    if session.get("stage") == "posten_amount":
+        try:
+            amount = float(raw)
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ Bitte gültigen Betrag eingeben (z.B. `25.50`):",
+                                            parse_mode="Markdown")
+            return
+        desc = session.get("posten_desc", "Posten")
+        # Quittung + Item anlegen
+        receipt_id = db.save_receipt(
+            store=desc, date="", total=amount, currency=CURRENCY,
+            note="manuell", file_path="", payer_id=None, my_share=0.0,
+        )
+        item_ids = db.save_items(receipt_id, [{"description": desc, "amount": amount, "quantity": 1}])
+        session.update({
+            "stage": "payer_select",
+            "receipt_id": receipt_id,
+            "items": [{"id": item_ids[0], "description": desc, "amount": amount, "quantity": 1}],
+            "data": {"currency": CURRENCY, "total": amount},
+        })
+        sessions[chat_id] = session
+        persons = db.get_persons()
+        kbd = [[InlineKeyboardButton("👤 Ich habe gezahlt", callback_data="payer:me")]]
+        for p in persons:
+            kbd.append([InlineKeyboardButton(f"💳 {p['name']} hat gezahlt",
+                                             callback_data=f"payer:{p['id']}")])
+        kbd.append([InlineKeyboardButton("➕ Person hinzufügen", callback_data="inline_add_person")])
+        kbd.append([InlineKeyboardButton("❌ Abbrechen", callback_data="cancel")])
+        await _reply(update, ctx,
+            f"➕ *{desc}* – {CURRENCY} {amount:.2f}\n\n❓ *Wer hat gezahlt?*",
+            inline=InlineKeyboardMarkup(kbd))
         return
 
     # ── Inline Person erstellen
@@ -1237,6 +1290,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("verlauf",    cmd_verlauf))
     app.add_handler(CommandHandler("quittungen", cmd_quittungen))
     app.add_handler(CommandHandler("geld",       cmd_geld))
+    app.add_handler(CommandHandler("posten",     cmd_posten))
     app.add_handler(CommandHandler("loeschen",   cmd_loeschen))
     app.add_handler(CommandHandler("abbrechen",  cmd_abbrechen))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_file))
@@ -1249,6 +1303,7 @@ async def set_commands(app: Application):
     await app.bot.set_my_commands([
         BotCommand("start",      "Hilfe & Übersicht"),
         BotCommand("geld",       "💸 Zahlung buchen"),
+        BotCommand("posten",     "➕ Manueller Posten"),
         BotCommand("saldo",      "Aktuelle Salden"),
         BotCommand("detail",     "Kontoauszug einer Person"),
         BotCommand("verlauf",    "Letzte Zahlungen"),
