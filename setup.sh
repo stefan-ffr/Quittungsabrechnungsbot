@@ -21,7 +21,7 @@ if [ -f /proc/1/environ ] && grep -qa container=lxc /proc/1/environ 2>/dev/null;
         echo "   Oder in /etc/pve/lxc/<ID>.conf:"
         echo "     features: nesting=1,keyctl=1"
         echo ""
-        read -rp "  Trotzdem fortfahren? [j/N] " CONTINUE
+        read -rp "  Trotzdem fortfahren? [j/N] " CONTINUE < /dev/tty
         [[ "$CONTINUE" =~ ^[jJyY]$ ]] || exit 1
     fi
 fi
@@ -64,7 +64,7 @@ curl -fsSL "$RAW/.env.example" -o .env.example
 if [ -f .env ]; then
     echo ""
     echo "⚙️  .env existiert bereits."
-    read -rp "  Neu konfigurieren? [j/N] " RECONFIGURE
+    read -rp "  Neu konfigurieren? [j/N] " RECONFIGURE < /dev/tty
     if [[ ! "$RECONFIGURE" =~ ^[jJyY]$ ]]; then
         echo "  → Bestehende Konfiguration beibehalten"
         SKIP_CONFIG=true
@@ -85,12 +85,12 @@ if [ "$SKIP_CONFIG" != "true" ]; then
     echo "  2. /newbot → Namen & Username wählen"
     echo "  3. Token kopieren"
     echo ""
-    read -rp "  Telegram Bot Token: " TELEGRAM_TOKEN
+    read -rp "  Telegram Bot Token: " TELEGRAM_TOKEN < /dev/tty
     echo ""
     echo "  Chat-ID herausfinden: Nachricht an @userinfobot senden"
     echo "  Mehrere IDs mit Komma trennen (z.B. 123456,789012)"
     echo ""
-    read -rp "  Erlaubte Chat-IDs: " ALLOWED_CHAT_IDS
+    read -rp "  Erlaubte Chat-IDs: " ALLOWED_CHAT_IDS < /dev/tty
     echo ""
 
     # ── AI Provider ──
@@ -99,7 +99,7 @@ if [ "$SKIP_CONFIG" != "true" ]; then
     echo "  1) Anthropic (direkt) – https://console.anthropic.com/"
     echo "  2) OpenRouter          – https://openrouter.ai/keys"
     echo ""
-    read -rp "  Auswahl [1/2]: " AI_CHOICE
+    read -rp "  Auswahl [1/2]: " AI_CHOICE < /dev/tty
 
     AI_PROVIDER="anthropic"
     ANTHROPIC_API_KEY=""
@@ -109,16 +109,16 @@ if [ "$SKIP_CONFIG" != "true" ]; then
     if [ "$AI_CHOICE" = "2" ]; then
         AI_PROVIDER="openrouter"
         echo ""
-        read -rp "  OpenRouter API Key: " OPENROUTER_API_KEY
+        read -rp "  OpenRouter API Key: " OPENROUTER_API_KEY < /dev/tty
         echo ""
         echo "  Standard-Modell: anthropic/claude-sonnet-4"
-        read -rp "  Anderes Modell? (Enter = Standard): " AI_MODEL
+        read -rp "  Anderes Modell? (Enter = Standard): " AI_MODEL < /dev/tty
     else
         echo ""
-        read -rp "  Anthropic API Key: " ANTHROPIC_API_KEY
+        read -rp "  Anthropic API Key: " ANTHROPIC_API_KEY < /dev/tty
         echo ""
         echo "  Standard-Modell: claude-sonnet-4-20250514"
-        read -rp "  Anderes Modell? (Enter = Standard): " AI_MODEL
+        read -rp "  Anderes Modell? (Enter = Standard): " AI_MODEL < /dev/tty
     fi
 
     # ── .env schreiben ──
