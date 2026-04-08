@@ -1,8 +1,11 @@
 import base64
+import io
 import json
 import re
 import anthropic
 import openai
+from PIL import Image
+from pdf2image import convert_from_bytes
 from app.config import (
     AI_PROVIDER, ANTHROPIC_API_KEY, OPENROUTER_API_KEY, AI_MODEL,
 )
@@ -35,24 +38,45 @@ Wichtig:
 USER_PROMPT = "Extrahiere alle Positionen aus dieser Quittung."
 
 
-def _encode_file(file_bytes: bytes) -> str:
-    return base64.standard_b64encode(file_bytes).decode("utf-8")
+def _to_jpeg_bytes(img: Image.Image) -> bytes:
+    """Convert a PIL Image to JPEG bytes."""
+    if img.mode in ("RGBA", "P", "LA"):
+        img = img.convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
 
 
-def _extract_anthropic(file_bytes: bytes, mime_type: str) -> str:
+def _file_to_images(file_bytes: bytes, mime_type: str) -> list[bytes]:
+    """Convert any supported file to a list of JPEG byte arrays."""
+    if mime_type == "application/pdf":
+        pages = convert_from_bytes(file_bytes, dpi=200)
+        return [_to_jpeg_bytes(page) for page in pages]
+
+    # Already an image – normalize to JPEG
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+        return [_to_jpeg_bytes(img)]
+    except Exception:
+        # Fallback: assume it's already a valid JPEG
+        return [file_bytes]
+
+
+def _encode(data: bytes) -> str:
+    return base64.standard_b64encode(data).decode("utf-8")
+
+
+def _extract_anthropic(images: list[bytes]) -> str:
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     model = AI_MODEL or "claude-sonnet-4-20250514"
 
-    if mime_type == "application/pdf":
-        content = [
-            {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": _encode_file(file_bytes)}},
-            {"type": "text", "text": USER_PROMPT},
-        ]
-    else:
-        content = [
-            {"type": "image", "source": {"type": "base64", "media_type": mime_type, "data": _encode_file(file_bytes)}},
-            {"type": "text", "text": USER_PROMPT},
-        ]
+    content = []
+    for img in images:
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": _encode(img)},
+        })
+    content.append({"type": "text", "text": USER_PROMPT})
 
     response = client.messages.create(
         model=model, max_tokens=2048, system=SYSTEM_PROMPT,
@@ -61,30 +85,18 @@ def _extract_anthropic(file_bytes: bytes, mime_type: str) -> str:
     return response.content[0].text.strip()
 
 
-def _extract_openrouter(file_bytes: bytes, mime_type: str) -> str:
+def _extract_openrouter(images: list[bytes]) -> str:
     client = openai.OpenAI(
         api_key=OPENROUTER_API_KEY,
         base_url="https://openrouter.ai/api/v1",
     )
     model = AI_MODEL or "anthropic/claude-sonnet-4"
-    b64 = _encode_file(file_bytes)
 
-    # PDFs via OpenRouter als document senden (Anthropic-Format)
-    if mime_type == "application/pdf":
-        user_content = [
-            {"type": "file", "file": {"filename": "receipt.pdf", "file_data": f"data:application/pdf;base64,{b64}"}},
-            {"type": "text", "text": USER_PROMPT},
-        ]
-    else:
-        # OpenRouter/Anthropic unterstützt nur bestimmte Bildformate
-        supported_image = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-        if mime_type not in supported_image:
-            mime_type = "image/jpeg"
-        data_url = f"data:{mime_type};base64,{b64}"
-        user_content = [
-            {"type": "image_url", "image_url": {"url": data_url}},
-            {"type": "text", "text": USER_PROMPT},
-        ]
+    user_content = []
+    for img in images:
+        data_url = f"data:image/jpeg;base64,{_encode(img)}"
+        user_content.append({"type": "image_url", "image_url": {"url": data_url}})
+    user_content.append({"type": "text", "text": USER_PROMPT})
 
     response = client.chat.completions.create(
         model=model, max_tokens=2048,
@@ -98,10 +110,12 @@ def _extract_openrouter(file_bytes: bytes, mime_type: str) -> str:
 
 def extract_receipt(file_bytes: bytes, mime_type: str) -> dict:
     """Call AI to extract receipt data from image or PDF bytes."""
+    images = _file_to_images(file_bytes, mime_type)
+
     if AI_PROVIDER == "openrouter":
-        raw = _extract_openrouter(file_bytes, mime_type)
+        raw = _extract_openrouter(images)
     else:
-        raw = _extract_anthropic(file_bytes, mime_type)
+        raw = _extract_anthropic(images)
 
     # Strip possible markdown fences
     raw = re.sub(r"^```(?:json)?", "", raw).strip()
