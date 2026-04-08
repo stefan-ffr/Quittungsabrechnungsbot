@@ -169,11 +169,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _reply(update, ctx,
         "👋 *Quittungs-Bot*\n\n"
         "📸 Foto oder PDF einer Quittung senden\n"
-        "💸 Zahlung buchen → Button unten oder /geld\n\n"
-        "Befehle:\n"
-        "/saldo · /detail · /verlauf · /quittungen\n"
-        "/personen · /person\\_add · /person\\_del\n"
-        "/loeschen · /abbrechen",
+        "💸 Zahlung buchen\n"
+        "💰 Saldo & Kontoauszüge\n"
+        "👥 Personen verwalten\n\n"
+        "Nutze die Buttons unten ⬇️",
         set_active=False,
     )
 
@@ -182,20 +181,32 @@ async def cmd_personen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
     persons = db.get_persons()
     if not persons:
-        await _reply(update, ctx, "Noch keine Personen.\n/person_add [Name]", set_active=False)
+        sessions[update.effective_chat.id] = {"stage": "person_add_name"}
+        await _reply(update, ctx,
+            "Noch keine Personen.\n\n➕ *Name eingeben* um erste Person anzulegen:",
+            set_active=True)
         return
     balances = {b["id"]: b for b in db.get_balances()}
     lines = ["👥 *Personen & Salden:*\n"]
     for p in persons:
         b = balances.get(p["id"])
         lines.append(_fmt_balance(b) if b else f"• *{p['name']}*")
-    await _reply(update, ctx, "\n".join(lines), set_active=False)
+    rows = []
+    for p in persons:
+        rows.append([
+            InlineKeyboardButton(f"📋 {p['name']}", callback_data=f"detail:{p['id']}"),
+            InlineKeyboardButton("🗑️", callback_data=f"person_del:{p['id']}"),
+        ])
+    rows.append([InlineKeyboardButton("➕ Person hinzufügen", callback_data="person_add_start")])
+    await _reply(update, ctx, "\n".join(lines),
+                 inline=InlineKeyboardMarkup(rows), set_active=False)
 
 
 async def cmd_person_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
     if not ctx.args:
-        await _reply(update, ctx, "Verwendung: /person_add [Name]")
+        sessions[update.effective_chat.id] = {"stage": "person_add_name"}
+        await _reply(update, ctx, "➕ *Name der neuen Person eingeben:*", set_active=True)
         return
     name = " ".join(ctx.args).strip()
     db.add_person(name)
@@ -205,7 +216,15 @@ async def cmd_person_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_person_del(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
     if not ctx.args:
-        await _reply(update, ctx, "Verwendung: /person_del [Name]")
+        persons = db.get_persons()
+        if not persons:
+            await _reply(update, ctx, "Keine Personen vorhanden.", set_active=False)
+            return
+        rows = [[InlineKeyboardButton(f"🗑️ {p['name']}", callback_data=f"person_del:{p['id']}")]
+                for p in persons]
+        rows.append([InlineKeyboardButton("❌ Abbrechen", callback_data="cancel")])
+        await _reply(update, ctx, "🗑️ *Welche Person löschen?*",
+                     inline=InlineKeyboardMarkup(rows), set_active=True)
         return
     name = " ".join(ctx.args).strip()
     match = next((p for p in db.get_persons() if p["name"].lower() == name.lower()), None)
@@ -237,7 +256,11 @@ async def cmd_saldo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines.append(f"\n📊 Offen (an mich): {CURRENCY} {total_mir:.2f}")
     if total_ich > 0:
         lines.append(f"📊 Meine Schulden:  {CURRENCY} {total_ich:.2f}")
-    await _reply(update, ctx, "\n".join(lines), set_active=False)
+    rows = [[InlineKeyboardButton(f"📋 {b['name']}", callback_data=f"detail:{b['id']}")]
+            for b in balances]
+    await _reply(update, ctx, "\n".join(lines),
+                 inline=InlineKeyboardMarkup(rows) if rows else None,
+                 set_active=False)
 
 
 async def cmd_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -305,8 +328,9 @@ async def cmd_verlauf(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         note  = f" · _{t['note']}_" if t.get("note") else ""
         date  = str(t.get("created_at", ""))[:10]
         lines.append(f"[{t['id']}] {arrow} *{t['name']}*: {CURRENCY} {t['amount']:.2f}{note} [{date}]")
-    lines.append("\n/loeschen – letzten Eintrag rückgängig")
-    await _reply(update, ctx, "\n".join(lines), set_active=False)
+    rows = [[InlineKeyboardButton("🗑️ Letzte Zahlung löschen", callback_data="del:last_transfer")]]
+    await _reply(update, ctx, "\n".join(lines),
+                 inline=InlineKeyboardMarkup(rows), set_active=False)
 
 
 async def cmd_quittungen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -322,7 +346,9 @@ async def cmd_quittungen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         total = f"{CURRENCY} {r['total']:.2f}" if r["total"] else "?"
         payer = f"gezahlt von *{r['payer_name']}*" if r["payer_name"] else "von *mir* gezahlt"
         lines.append(f"• *{store}* – {date} – {total} · {payer}")
-    await _reply(update, ctx, "\n".join(lines), set_active=False)
+    rows = [[InlineKeyboardButton("🗑️ Letzte Quittung löschen", callback_data="del:last_receipt")]]
+    await _reply(update, ctx, "\n".join(lines),
+                 inline=InlineKeyboardMarkup(rows), set_active=False)
 
 
 async def cmd_geld(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -502,6 +528,25 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         sessions.pop(chat_id, None)
         await query.edit_message_text("❌ Abgebrochen.")
         await _send(ctx, chat_id, "Bereit.", set_active=False)
+        return
+
+    # ── Person hinzufügen (aus Personen-Menü)
+    if data == "person_add_start":
+        session["stage"] = "person_add_name"
+        sessions[chat_id] = session
+        await query.edit_message_text("➕ *Name der neuen Person eingeben:*",
+                                      parse_mode="Markdown")
+        return
+
+    # ── Person löschen
+    if data.startswith("person_del:"):
+        pid = int(data.split(":")[1])
+        p = db.get_person(pid)
+        pname = p["name"] if p else "?"
+        db.delete_person(pid)
+        sessions.pop(chat_id, None)
+        await query.edit_message_text(f"🗑️ *{pname}* entfernt.", parse_mode="Markdown")
+        await _send(ctx, chat_id, "Erledigt.", set_active=False)
         return
 
     # ── Detail-Auswahl
@@ -922,6 +967,17 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     session = sessions.get(chat_id, {})
     raw     = text.replace(",", ".")
+
+    # ── Person hinzufügen (standalone)
+    if session.get("stage") == "person_add_name":
+        name = text.strip()
+        if not name:
+            await _reply(update, ctx, "❌ Name darf nicht leer sein.")
+            return
+        db.add_person(name)
+        sessions.pop(chat_id, None)
+        await _reply(update, ctx, f"✅ *{name}* hinzugefügt.", set_active=False)
+        return
 
     # ── Inline Person erstellen
     if session.get("stage") == "inline_add_person":
