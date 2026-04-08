@@ -414,8 +414,8 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ext     = os.path.splitext(fname)[1] or ".bin"
         mime    = update.message.document.mime_type or "application/octet-stream"
     else:
-        await msg.edit_text("❌ Nicht unterstützter Dateityp.")
-        ctx.chat_data["kbd_active"] = False
+        await msg.delete()
+        await _send(ctx, chat_id, "❌ Nicht unterstützter Dateityp.", set_active=False)
         return
 
     os.makedirs(UPLOAD_PATH, exist_ok=True)
@@ -436,11 +436,8 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         data = ai.extract_receipt(file_bytes, mime)
     except Exception as e:
         log.exception("AI extraction failed")
-        try:
-            await msg.edit_text(f"❌ KI-Fehler: {e}")
-        except Exception:
-            await update.message.reply_text(f"❌ KI-Fehler: {e}")
-        ctx.chat_data["kbd_active"] = False
+        await msg.delete()
+        await _send(ctx, chat_id, f"❌ KI-Fehler: {e}", set_active=False)
         return
 
     receipt_id = db.save_receipt(
@@ -456,11 +453,11 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     raw_items = data.get("items", [])
     if not raw_items:
-        await msg.edit_text(
+        await msg.delete()
+        await _send(ctx, chat_id,
             f"⚠️ Keine Positionen erkannt.\n"
-            f"#{receipt_id} – {data.get('store','?')} – {CURRENCY} {data.get('total',0):.2f}"
-        )
-        ctx.chat_data["kbd_active"] = False
+            f"#{receipt_id} – {data.get('store','?')} – {CURRENCY} {data.get('total',0):.2f}",
+            set_active=False)
         return
 
     item_ids = db.save_items(receipt_id, raw_items)
@@ -498,7 +495,8 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                                          callback_data=f"payer:{p['id']}")])
     kbd.append([InlineKeyboardButton("➕ Person hinzufügen", callback_data="inline_add_person")])
     kbd.append([InlineKeyboardButton("❌ Abbrechen", callback_data="cancel")])
-    await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
+    await msg.delete()
+    await ctx.bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
 
 
 # ── Zuweisung Keyboards ───────────────────────────────────────────────────────
