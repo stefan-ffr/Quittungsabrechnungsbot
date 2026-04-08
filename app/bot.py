@@ -631,7 +631,97 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             qty = f"×{int(it['quantity'])} " if it["quantity"] and it["quantity"] != 1 else ""
             lines.append(f"  • {it['description']} {qty}→ {CURRENCY} {it['amount']:.2f}")
             lines.append(f"    ↳ {assigned}")
-        await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
+        kbd = [
+            [InlineKeyboardButton("💳 Zahler ändern", callback_data=f"edit_payer:{rid}")],
+            [InlineKeyboardButton("🔀 Zuweisungen ändern", callback_data=f"edit_assign:{rid}")],
+            [InlineKeyboardButton("🗑️ Quittung löschen", callback_data=f"del:receipt:{rid}")],
+        ]
+        await query.edit_message_text("\n".join(lines),
+                                      reply_markup=InlineKeyboardMarkup(kbd),
+                                      parse_mode="Markdown")
+        return
+
+    # ── Quittung: Zahler ändern
+    if data.startswith("edit_payer:"):
+        rid = int(data.split(":")[1])
+        session.update({"stage": "edit_payer_select", "edit_receipt_id": rid})
+        sessions[chat_id] = session
+        persons = db.get_persons()
+        kbd = [[InlineKeyboardButton("👤 Ich habe gezahlt", callback_data=f"set_payer:{rid}:me")]]
+        for p in persons:
+            kbd.append([InlineKeyboardButton(
+                f"💳 {p['name']}", callback_data=f"set_payer:{rid}:{p['id']}"
+            )])
+        kbd.append([InlineKeyboardButton("❌ Abbrechen", callback_data="cancel")])
+        await query.edit_message_text("💳 *Wer hat gezahlt?*",
+                                      reply_markup=InlineKeyboardMarkup(kbd),
+                                      parse_mode="Markdown")
+        return
+
+    if data.startswith("set_payer:"):
+        parts = data.split(":")
+        rid = int(parts[1])
+        who = parts[2]
+        if who == "me":
+            db.update_receipt_payer(rid, None, 0.0)
+            await query.edit_message_text("✅ Zahler auf *dich* geändert.", parse_mode="Markdown")
+        else:
+            pid = int(who)
+            p = db.get_person(pid)
+            pname = p["name"] if p else "?"
+            # Recalculate my_share
+            total_r = db.get_receipts(50)
+            r = next((x for x in total_r if x["id"] == rid), None)
+            total = r["total"] if r else 0
+            assigned = db.get_total_assigned(rid)
+            my_share = round(max(total - assigned, 0), 2)
+            db.update_receipt_payer(rid, pid, my_share)
+            await query.edit_message_text(
+                f"✅ Zahler auf *{pname}* geändert.", parse_mode="Markdown")
+        sessions.pop(chat_id, None)
+        await _send(ctx, chat_id, "Erledigt.", set_active=False)
+        return
+
+    # ── Quittung: Zuweisungen ändern
+    if data.startswith("edit_assign:"):
+        rid = int(data.split(":")[1])
+        items_raw = db.get_items_for_receipt(rid)
+        receipts = db.get_receipts(50)
+        r = next((x for x in receipts if x["id"] == rid), None)
+        items_s = [
+            {"id": it["id"], "description": it["description"],
+             "amount": it["amount"], "quantity": it["quantity"] or 1}
+            for it in items_raw
+        ]
+        session.update({
+            "stage": "manual",
+            "receipt_id": rid,
+            "items": items_s,
+            "data": {"currency": r["currency"] if r else CURRENCY,
+                     "total": r["total"] if r else 0},
+            "payer_id": r["payer_id"] if r else None,
+            "payer_name": r["payer_name"] if r and r["payer_name"] else "ich",
+            "manual_idx": 0,
+            "selected_item": [],
+        })
+        sessions[chat_id] = session
+        await _show_manual_item(query, session)
+        return
+
+    # ── Quittung: einzelne löschen
+    if data.startswith("del:receipt:"):
+        rid = int(data.split(":")[2])
+        receipts = db.get_receipts(50)
+        r = next((x for x in receipts if x["id"] == rid), None)
+        if r:
+            db.delete_receipt(rid)
+            await query.edit_message_text(
+                f"🗑️ Quittung gelöscht: *{r['store'] or 'Quittung'}* {CURRENCY} {r['total']:.2f}",
+                parse_mode="Markdown")
+        else:
+            await query.edit_message_text("❌ Quittung nicht gefunden.")
+        sessions.pop(chat_id, None)
+        await _send(ctx, chat_id, "Erledigt.", set_active=False)
         return
 
     # ── Detail-Auswahl
