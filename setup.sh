@@ -13,8 +13,8 @@ echo ""
 # ── LXC-Erkennung & Prüfung ──
 if [ -f /proc/1/environ ] && grep -qa container=lxc /proc/1/environ 2>/dev/null; then
     echo "📦 Proxmox LXC erkannt"
-    # Prüfe ob nesting aktiv ist
-    if ! grep -q "devices" /proc/self/cgroup 2>/dev/null && [ ! -d /sys/fs/cgroup/devices ]; then
+    # Prüfe ob nesting aktiv ist (cgroup v1 und v2 kompatibel)
+    if ! docker info &>/dev/null && [[ ! -d /sys/fs/cgroup/devices ]] && [[ ! -f /sys/fs/cgroup/cgroup.controllers ]]; then
         echo ""
         echo "⚠️  Nesting scheint nicht aktiviert zu sein!"
         echo "   In Proxmox: LXC → Options → Features → nesting=1,keyctl=1"
