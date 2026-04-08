@@ -362,7 +362,11 @@ async def cmd_quittungen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         total = f"{CURRENCY} {r['total']:.2f}" if r["total"] else "?"
         payer = f"gezahlt von *{r['payer_name']}*" if r["payer_name"] else "von *mir* gezahlt"
         lines.append(f"• *{store}* – {date} – {total} · {payer}")
-    rows = [[InlineKeyboardButton("🗑️ Letzte Quittung löschen", callback_data="del:last_receipt")]]
+    rows = [[InlineKeyboardButton(
+        f"📋 {(r['store'] or 'Quittung')[:20]} – {(r['date'] or '')[:10]}",
+        callback_data=f"receipt_detail:{r['id']}"
+    )] for r in receipts]
+    rows.append([InlineKeyboardButton("🗑️ Letzte Quittung löschen", callback_data="del:last_receipt")])
     await _reply(update, ctx, "\n".join(lines),
                  inline=InlineKeyboardMarkup(rows), set_active=False)
 
@@ -602,6 +606,32 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         sessions.pop(chat_id, None)
         await query.edit_message_text(f"🗑️ *{pname}* entfernt.", parse_mode="Markdown")
         await _send(ctx, chat_id, "Erledigt.", set_active=False)
+        return
+
+    # ── Quittung Detail
+    if data.startswith("receipt_detail:"):
+        rid = int(data.split(":")[1])
+        receipts = db.get_receipts(50)
+        r = next((x for x in receipts if x["id"] == rid), None)
+        if not r:
+            await query.edit_message_text("❌ Quittung nicht gefunden.")
+            return
+        items = db.get_items_for_receipt(rid)
+        date = (r["date"] or str(r["uploaded_at"])[:10])
+        store = r["store"] or "Unbekannt"
+        payer = f"*{r['payer_name']}*" if r["payer_name"] else "*mir*"
+        lines = [
+            f"🧾 *{store}* – {date}",
+            f"💰 Total: {CURRENCY} {r['total']:.2f}",
+            f"💳 Gezahlt von: {payer}\n",
+            "*Positionen:*",
+        ]
+        for it in items:
+            assigned = it["person_names"] or "—"
+            qty = f"×{int(it['quantity'])} " if it["quantity"] and it["quantity"] != 1 else ""
+            lines.append(f"  • {it['description']} {qty}→ {CURRENCY} {it['amount']:.2f}")
+            lines.append(f"    ↳ {assigned}")
+        await query.edit_message_text("\n".join(lines), parse_mode="Markdown")
         return
 
     # ── Detail-Auswahl
