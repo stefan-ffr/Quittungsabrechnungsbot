@@ -334,13 +334,14 @@ def get_balances(my_person_id: Optional[int] = None) -> list[dict]:
     # Was Personen mir schulden (ich habe gezahlt ODER ich bin der Zahler als Person)
     if my_person_id:
         # Ich = Person: was andere mir schulden = Zuweisungen an andere
-        # bei Quittungen die ICH (als Person) gezahlt habe
+        # bei Quittungen die ICH gezahlt habe (payer_id = ich ODER payer_id IS NULL)
         owed_to_me = conn.execute("""
             SELECT ia.person_id, SUM(ia.share_amount) as total
             FROM item_assignments ia
             JOIN items i ON i.id = ia.item_id
             JOIN receipts r ON r.id = i.receipt_id
-            WHERE r.payer_id = ? AND ia.person_id != ?
+            WHERE (r.payer_id = ? OR r.payer_id IS NULL)
+              AND ia.person_id != ?
             GROUP BY ia.person_id
         """, (my_person_id, my_person_id)).fetchall()
     else:
@@ -356,12 +357,15 @@ def get_balances(my_person_id: Optional[int] = None) -> list[dict]:
     # Was ich Personen schulde
     if my_person_id:
         # Meine Zuweisungen bei Quittungen die ANDERE gezahlt haben
+        # (payer_id ist gesetzt UND ist nicht ich UND ist nicht NULL)
         i_owe = conn.execute("""
             SELECT r.payer_id, SUM(ia.share_amount) as total
             FROM item_assignments ia
             JOIN items i ON i.id = ia.item_id
             JOIN receipts r ON r.id = i.receipt_id
-            WHERE ia.person_id = ? AND r.payer_id IS NOT NULL AND r.payer_id != ?
+            WHERE ia.person_id = ?
+              AND r.payer_id IS NOT NULL
+              AND r.payer_id != ?
             GROUP BY r.payer_id
         """, (my_person_id, my_person_id)).fetchall()
     else:
