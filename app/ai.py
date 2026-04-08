@@ -69,22 +69,28 @@ def _extract_openrouter(file_bytes: bytes, mime_type: str) -> str:
     model = AI_MODEL or "anthropic/claude-sonnet-4"
     b64 = _encode_file(file_bytes)
 
-    # OpenRouter/Anthropic unterstützt nur bestimmte Bildformate
-    supported_image = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-    if mime_type not in supported_image and mime_type != "application/pdf":
-        # Fallback: als JPEG behandeln (Telegram konvertiert Fotos meist zu JPEG)
-        mime_type = "image/jpeg"
-
-    data_url = f"data:{mime_type};base64,{b64}"
+    # PDFs via OpenRouter als document senden (Anthropic-Format)
+    if mime_type == "application/pdf":
+        user_content = [
+            {"type": "file", "file": {"filename": "receipt.pdf", "file_data": f"data:application/pdf;base64,{b64}"}},
+            {"type": "text", "text": USER_PROMPT},
+        ]
+    else:
+        # OpenRouter/Anthropic unterstützt nur bestimmte Bildformate
+        supported_image = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+        if mime_type not in supported_image:
+            mime_type = "image/jpeg"
+        data_url = f"data:{mime_type};base64,{b64}"
+        user_content = [
+            {"type": "image_url", "image_url": {"url": data_url}},
+            {"type": "text", "text": USER_PROMPT},
+        ]
 
     response = client.chat.completions.create(
         model=model, max_tokens=2048,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": data_url}},
-                {"type": "text", "text": USER_PROMPT},
-            ]},
+            {"role": "user", "content": user_content},
         ],
     )
     return response.choices[0].message.content.strip()
