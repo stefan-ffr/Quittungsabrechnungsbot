@@ -69,6 +69,7 @@ def init_db() -> None:
             FOREIGN KEY (person_id) REFERENCES persons(id) ON DELETE CASCADE
         );
 
+        -- Migration handled below for existing DBs
         CREATE TABLE IF NOT EXISTS allowed_chats (
             chat_id     INTEGER PRIMARY KEY,
             name        TEXT,
@@ -82,6 +83,10 @@ def init_db() -> None:
         conn.execute("ALTER TABLE receipts ADD COLUMN payer_id INTEGER")
     if "my_share" not in cols:
         conn.execute("ALTER TABLE receipts ADD COLUMN my_share REAL DEFAULT 0")
+    # Migration: add chat_id to persons
+    p_cols = [r[1] for r in conn.execute("PRAGMA table_info(persons)").fetchall()]
+    if "chat_id" not in p_cols:
+        conn.execute("ALTER TABLE persons ADD COLUMN chat_id INTEGER")
     conn.commit()
     conn.close()
 
@@ -111,6 +116,20 @@ def add_person(name: str) -> int:
     ).fetchone()["id"]
     conn.close()
     return pid
+
+
+def link_person_chat(person_id: int, chat_id: int) -> None:
+    conn = get_conn()
+    conn.execute("UPDATE persons SET chat_id=? WHERE id=?", (chat_id, person_id))
+    conn.commit()
+    conn.close()
+
+
+def get_person_by_chat(chat_id: int) -> Optional[sqlite3.Row]:
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM persons WHERE chat_id=?", (chat_id,)).fetchone()
+    conn.close()
+    return row
 
 
 def delete_person(person_id: int) -> None:
@@ -299,7 +318,7 @@ def delete_cash_transfer(transfer_id: int) -> None:
 
 # ── Balances ──────────────────────────────────────────────────────────────────
 
-def get_balances() -> list[dict]:
+def get_balances(my_person_id: Optional[int] = None) -> list[dict]:
     """
     Saldo-Logik (ich-zentrisch):
 
@@ -307,35 +326,51 @@ def get_balances() -> list[dict]:
     balance < 0 → ICH schulde Person Geld
     balance = 0 → quitt
 
-    Berechnung pro Person P:
-      + Summe(ia.share_amount) wenn ich gezahlt habe (r.payer_id IS NULL)
-        → P hat etwas konsumiert, das ich bezahlt habe
-      - Summe(r.my_share) wenn P gezahlt hat (r.payer_id = P.id)
-        → Ich habe etwas konsumiert, das P bezahlt hat
-      - Summe(ct.amount) wenn direction='received'
-        → P hat mir bereits Bargeld gegeben
-      + Summe(ct.amount) wenn direction='paid'
-        → Ich habe P bereits Bargeld gegeben
+    Wenn my_person_id gesetzt: "ich" ist eine Person in der DB.
+    Zuweisungen an mich bei fremdem Zahler → ich schulde dem Zahler.
     """
     conn = get_conn()
 
-    # Was Personen mir schulden (ich habe gezahlt)
-    owed_to_me = conn.execute("""
-        SELECT ia.person_id, SUM(ia.share_amount) as total
-        FROM item_assignments ia
-        JOIN items i ON i.id = ia.item_id
-        JOIN receipts r ON r.id = i.receipt_id
-        WHERE r.payer_id IS NULL
-        GROUP BY ia.person_id
-    """).fetchall()
+    # Was Personen mir schulden (ich habe gezahlt ODER ich bin der Zahler als Person)
+    if my_person_id:
+        # Ich = Person: was andere mir schulden = Zuweisungen an andere
+        # bei Quittungen die ICH (als Person) gezahlt habe
+        owed_to_me = conn.execute("""
+            SELECT ia.person_id, SUM(ia.share_amount) as total
+            FROM item_assignments ia
+            JOIN items i ON i.id = ia.item_id
+            JOIN receipts r ON r.id = i.receipt_id
+            WHERE r.payer_id = ? AND ia.person_id != ?
+            GROUP BY ia.person_id
+        """, (my_person_id, my_person_id)).fetchall()
+    else:
+        owed_to_me = conn.execute("""
+            SELECT ia.person_id, SUM(ia.share_amount) as total
+            FROM item_assignments ia
+            JOIN items i ON i.id = ia.item_id
+            JOIN receipts r ON r.id = i.receipt_id
+            WHERE r.payer_id IS NULL
+            GROUP BY ia.person_id
+        """).fetchall()
 
-    # Was ich Personen schulde (sie haben gezahlt, my_share wird automatisch berechnet)
-    i_owe = conn.execute("""
-        SELECT payer_id, SUM(my_share) as total
-        FROM receipts
-        WHERE payer_id IS NOT NULL AND my_share > 0
-        GROUP BY payer_id
-    """).fetchall()
+    # Was ich Personen schulde
+    if my_person_id:
+        # Meine Zuweisungen bei Quittungen die ANDERE gezahlt haben
+        i_owe = conn.execute("""
+            SELECT r.payer_id, SUM(ia.share_amount) as total
+            FROM item_assignments ia
+            JOIN items i ON i.id = ia.item_id
+            JOIN receipts r ON r.id = i.receipt_id
+            WHERE ia.person_id = ? AND r.payer_id IS NOT NULL AND r.payer_id != ?
+            GROUP BY r.payer_id
+        """, (my_person_id, my_person_id)).fetchall()
+    else:
+        i_owe = conn.execute("""
+            SELECT payer_id, SUM(my_share) as total
+            FROM receipts
+            WHERE payer_id IS NOT NULL AND my_share > 0
+            GROUP BY payer_id
+        """).fetchall()
 
     # Cash transfers
     transfers = conn.execute("""
@@ -358,6 +393,8 @@ def get_balances() -> list[dict]:
     result = []
     for p in persons:
         pid = p["id"]
+        if pid == my_person_id:
+            continue  # Mich selbst nicht anzeigen
         t = tf.get(pid, {"received": 0.0, "paid": 0.0})
         owed   = owed_map.get(pid, 0.0)   # P schuldet mir
         i_owe_ = i_owe_map.get(pid, 0.0)  # Ich schulde P

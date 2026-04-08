@@ -41,6 +41,12 @@ def _is_admin(chat_id: int) -> bool:
     return chat_id in ALLOWED_CHAT_IDS
 
 
+def _my_person_id(chat_id: int) -> int | None:
+    """Gibt die person_id zurück wenn der Chat-User mit einer Person verknüpft ist."""
+    p = db.get_person_by_chat(chat_id)
+    return p["id"] if p else None
+
+
 # ── Reply-Keyboards ───────────────────────────────────────────────────────────
 
 KBD_IDLE = ReplyKeyboardMarkup(
@@ -196,7 +202,7 @@ async def cmd_personen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "Noch keine Personen.\n\n➕ *Name eingeben* um erste Person anzulegen:",
             set_active=True)
         return
-    balances = {b["id"]: b for b in db.get_balances()}
+    balances = {b["id"]: b for b in db.get_balances(_my_person_id(update.effective_chat.id))}
     lines = ["👥 *Personen & Salden:*\n"]
     for p in persons:
         b = balances.get(p["id"])
@@ -247,7 +253,7 @@ async def cmd_person_del(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_saldo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
-    balances = db.get_balances()
+    balances = db.get_balances(_my_person_id(update.effective_chat.id))
     if not balances:
         await _reply(update, ctx, "Keine Daten.\n/person_add [Name]", set_active=False)
         return
@@ -291,7 +297,7 @@ async def cmd_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def _send_detail(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, person_id: int):
     hist     = db.get_person_history(person_id)
-    balances = {b["id"]: b for b in db.get_balances()}
+    balances = {b["id"]: b for b in db.get_balances(_my_person_id(chat_id))}
     b        = balances.get(person_id, {})
     name     = hist["person"].get("name", "?")
     lines    = [f"📋 *Kontoauszug: {name}*\n", _fmt_balance(b) if b else "", ""]
