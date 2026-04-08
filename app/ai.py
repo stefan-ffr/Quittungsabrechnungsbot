@@ -68,6 +68,13 @@ def _extract_openrouter(file_bytes: bytes, mime_type: str) -> str:
     )
     model = AI_MODEL or "anthropic/claude-sonnet-4"
     b64 = _encode_file(file_bytes)
+
+    # OpenRouter/Anthropic unterstützt nur bestimmte Bildformate
+    supported_image = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+    if mime_type not in supported_image and mime_type != "application/pdf":
+        # Fallback: als JPEG behandeln (Telegram konvertiert Fotos meist zu JPEG)
+        mime_type = "image/jpeg"
+
     data_url = f"data:{mime_type};base64,{b64}"
 
     response = client.chat.completions.create(
