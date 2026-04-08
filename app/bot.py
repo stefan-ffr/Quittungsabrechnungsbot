@@ -436,7 +436,10 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         data = ai.extract_receipt(file_bytes, mime)
     except Exception as e:
         log.exception("AI extraction failed")
-        await msg.edit_text(f"❌ KI-Fehler: {e}")
+        try:
+            await msg.edit_text(f"❌ KI-Fehler: {e}")
+        except Exception:
+            await update.message.reply_text(f"❌ KI-Fehler: {e}")
         ctx.chat_data["kbd_active"] = False
         return
 
@@ -1125,8 +1128,22 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Application ───────────────────────────────────────────────────────────────
 
+async def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
+    """Globaler Error-Handler – sendet Fehlermeldungen an den User."""
+    log.exception("Unhandled exception:", exc_info=ctx.error)
+    if update and hasattr(update, "effective_chat") and update.effective_chat:
+        try:
+            await ctx.bot.send_message(
+                update.effective_chat.id,
+                f"❌ Fehler: {ctx.error}",
+            )
+        except Exception:
+            pass
+
+
 def build_application() -> Application:
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("start",      cmd_start))
     app.add_handler(CommandHandler("personen",   cmd_personen))
     app.add_handler(CommandHandler("person_add", cmd_person_add))
