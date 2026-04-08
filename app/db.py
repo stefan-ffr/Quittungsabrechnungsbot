@@ -68,6 +68,13 @@ def init_db() -> None:
             created_at TEXT DEFAULT (datetime('now')),
             FOREIGN KEY (person_id) REFERENCES persons(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS allowed_chats (
+            chat_id     INTEGER PRIMARY KEY,
+            name        TEXT,
+            approved_by INTEGER,
+            created_at  TEXT DEFAULT (datetime('now'))
+        );
     """)
     # Migration: add payer_id / my_share to existing DB if missing
     cols = [r[1] for r in conn.execute("PRAGMA table_info(receipts)").fetchall()]
@@ -391,3 +398,29 @@ def get_person_history(person_id: int) -> dict:
         "receipts_they_paid": [dict(r) for r in receipts_they_paid],
         "transfers":         [dict(t) for t in transfers],
     }
+
+
+# ── Allowed Chats ────────────────────────────────────────────────────────────
+
+def get_allowed_chats() -> list[int]:
+    conn = get_conn()
+    rows = conn.execute("SELECT chat_id FROM allowed_chats").fetchall()
+    conn.close()
+    return [r["chat_id"] for r in rows]
+
+
+def add_allowed_chat(chat_id: int, name: str, approved_by: int) -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT OR IGNORE INTO allowed_chats (chat_id, name, approved_by) VALUES (?,?,?)",
+        (chat_id, name, approved_by)
+    )
+    conn.commit()
+    conn.close()
+
+
+def remove_allowed_chat(chat_id: int) -> None:
+    conn = get_conn()
+    conn.execute("DELETE FROM allowed_chats WHERE chat_id=?", (chat_id,))
+    conn.commit()
+    conn.close()

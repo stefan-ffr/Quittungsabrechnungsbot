@@ -27,10 +27,18 @@ log = logging.getLogger(__name__)
 CURRENCY = "CHF"
 
 sessions: dict[int, dict] = {}
+_pending_requests: set[int] = set()  # Chat-IDs die bereits angefragt haben
 
 
 def _auth(update: Update) -> bool:
-    return not ALLOWED_CHAT_IDS or update.effective_chat.id in ALLOWED_CHAT_IDS
+    if not ALLOWED_CHAT_IDS:
+        return True
+    chat_id = update.effective_chat.id
+    return chat_id in ALLOWED_CHAT_IDS or chat_id in db.get_allowed_chats()
+
+
+def _is_admin(chat_id: int) -> bool:
+    return chat_id in ALLOWED_CHAT_IDS
 
 
 # ── Reply-Keyboards ───────────────────────────────────────────────────────────
@@ -165,7 +173,9 @@ REPLY_TRIGGERS = {
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not _auth(update): return
+    if not _auth(update):
+        await _request_access(update, ctx)
+        return
     await _reply(update, ctx,
         "👋 *Quittungs-Bot*\n\n"
         "📸 Foto oder PDF einer Quittung senden\n"
@@ -386,7 +396,9 @@ async def cmd_abbrechen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── Datei-Handler ─────────────────────────────────────────────────────────────
 
 async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not _auth(update): return
+    if not _auth(update):
+        await _request_access(update, ctx)
+        return
     chat_id = update.effective_chat.id
 
     # Sofort auf AKTIV-Keyboard umschalten
@@ -513,6 +525,42 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     session = sessions.get(chat_id, {})
 
     if data == "noop":
+        return
+
+    # ── Zugriffsanfrage: Erlauben
+    if data.startswith("access_grant:"):
+        parts = data.split(":", 2)
+        req_chat_id = int(parts[1])
+        req_name = parts[2] if len(parts) > 2 else str(req_chat_id)
+        if not _is_admin(chat_id):
+            await query.answer("Nur Admins können Zugriff erteilen.", show_alert=True)
+            return
+        db.add_allowed_chat(req_chat_id, req_name, chat_id)
+        _pending_requests.discard(req_chat_id)
+        await query.edit_message_text(
+            f"✅ *{req_name}* (Chat-ID: `{req_chat_id}`) wurde freigeschaltet.",
+            parse_mode="Markdown"
+        )
+        try:
+            await ctx.bot.send_message(req_chat_id,
+                "✅ Dein Zugriff wurde freigeschaltet! Schick /start um loszulegen.")
+        except Exception:
+            log.warning("Could not notify user %s", req_chat_id)
+        return
+
+    # ── Zugriffsanfrage: Ablehnen
+    if data.startswith("access_deny:"):
+        req_chat_id = int(data.split(":")[1])
+        if not _is_admin(chat_id):
+            await query.answer("Nur Admins können Zugriff verweigern.", show_alert=True)
+            return
+        _pending_requests.discard(req_chat_id)
+        await query.edit_message_text("❌ Anfrage abgelehnt.")
+        try:
+            await ctx.bot.send_message(req_chat_id,
+                "❌ Dein Zugriff wurde abgelehnt.")
+        except Exception:
+            log.warning("Could not notify user %s", req_chat_id)
         return
 
     # ── Inline Person hinzufügen
@@ -944,8 +992,38 @@ async def _save_geld(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int,
 
 # ── Text-Eingaben ─────────────────────────────────────────────────────────────
 
+async def _request_access(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Sendet Zugriffsanfrage an alle Admins."""
+    chat_id = update.effective_chat.id
+    if chat_id in _pending_requests:
+        await update.message.reply_text("⏳ Deine Anfrage wurde bereits gesendet. Bitte warte auf Freigabe.")
+        return
+    _pending_requests.add(chat_id)
+    user = update.effective_user
+    name = user.full_name if user else str(chat_id)
+    username = f" (@{user.username})" if user and user.username else ""
+    await update.message.reply_text("🔒 Du hast keinen Zugriff.\n\nEine Anfrage wurde an den Admin gesendet.")
+    for admin_id in ALLOWED_CHAT_IDS:
+        try:
+            await ctx.bot.send_message(
+                admin_id,
+                f"🔔 *Zugriffsanfrage*\n\n"
+                f"*{name}*{username}\n"
+                f"Chat-ID: `{chat_id}`",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Erlauben", callback_data=f"access_grant:{chat_id}:{name}")],
+                    [InlineKeyboardButton("❌ Ablehnen", callback_data=f"access_deny:{chat_id}")],
+                ])
+            )
+        except Exception:
+            log.warning("Could not notify admin %s", admin_id)
+
+
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not _auth(update): return
+    if not _auth(update):
+        await _request_access(update, ctx)
+        return
     chat_id = update.effective_chat.id
     text    = update.message.text.strip()
 
