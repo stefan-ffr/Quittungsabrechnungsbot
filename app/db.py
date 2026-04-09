@@ -132,12 +132,25 @@ def init_db() -> None:
     if "group_id" not in ct_cols:
         conn.execute("ALTER TABLE cash_transfers ADD COLUMN group_id INTEGER")
 
-    # Remove old UNIQUE constraint on persons.name if it exists and create
-    # a new unique index scoped to group_id.
-    # SQLite cannot DROP constraints, but we can add the new index safely.
-    existing_indexes = [r[1] for r in conn.execute(
-        "PRAGMA index_list(persons)").fetchall()]
-    if "idx_persons_name_group" not in existing_indexes:
+    # Remove old UNIQUE constraint on persons.name by recreating the table.
+    # Check if the old constraint still exists (autoindex = built-in UNIQUE).
+    old_indexes = conn.execute("PRAGMA index_list(persons)").fetchall()
+    has_old_unique = any("autoindex" in (r["name"] or "") for r in old_indexes)
+    if has_old_unique:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS persons_new (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL,
+                chat_id    INTEGER,
+                group_id   INTEGER,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            INSERT OR IGNORE INTO persons_new SELECT id, name, chat_id, group_id, created_at FROM persons;
+            DROP TABLE persons;
+            ALTER TABLE persons_new RENAME TO persons;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_persons_name_group ON persons(name, group_id);
+        """)
+    else:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_persons_name_group "
             "ON persons(name, group_id)")
