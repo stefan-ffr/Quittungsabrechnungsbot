@@ -225,10 +225,40 @@ async def _ensure_group_cb(query, ctx: ContextTypes.DEFAULT_TYPE, chat_id: int) 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+
+    # Deep-link: /start join_INVITECODE_PERSONID
+    if ctx.args and ctx.args[0].startswith("join_"):
+        parts = ctx.args[0].split("_", 2)
+        if len(parts) == 3:
+            invite_code, person_id_str = parts[1], parts[2]
+            try:
+                link_pid = int(person_id_str)
+            except ValueError:
+                link_pid = None
+            if link_pid:
+                gid = db.join_group_with_person(invite_code, chat_id, link_pid)
+                if gid:
+                    p = db.get_person(link_pid)
+                    g = db.get_group(gid)
+                    pname = p["name"] if p else "?"
+                    gname = g["name"] if g else "?"
+                    # Auto-approve access if not already allowed
+                    if not _auth(update):
+                        db.add_allowed_chat(chat_id, pname, 0)
+                    await _reply(update, ctx,
+                        f"✅ Du bist der Gruppe *{gname}* als *{pname}* beigetreten!\n\n"
+                        "Nutze die Buttons unten ⬇️",
+                        set_active=False)
+                    return
+                else:
+                    await _reply(update, ctx, "❌ Ungültiger Einladungslink.", set_active=False)
+                    return
+
     if not _auth(update):
         await _request_access(update, ctx)
         return
-    chat_id = update.effective_chat.id
+
     gid = _active_group(chat_id)
     if gid is None:
         # Auto-migration
@@ -318,6 +348,7 @@ async def cmd_personen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for p in persons:
         rows.append([
             InlineKeyboardButton(f"📋 {p['name']}", callback_data=f"detail:{p['id']}"),
+            InlineKeyboardButton("🔗", callback_data=f"person_link:{p['id']}"),
             InlineKeyboardButton("🗑️", callback_data=f"person_del:{p['id']}"),
         ])
     rows.append([InlineKeyboardButton("➕ Person hinzufügen", callback_data="person_add_start")])
@@ -812,6 +843,30 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # ── Person loeschen
+    # ── Person verknüpfen: Einladungslink generieren
+    if data.startswith("person_link:"):
+        pid = int(data.split(":")[1])
+        p = db.get_person(pid)
+        if not p:
+            await query.edit_message_text("❌ Person nicht gefunden.")
+            return
+        gid = _active_group(chat_id)
+        g = db.get_group(gid) if gid else None
+        if not g:
+            await query.edit_message_text("❌ Keine aktive Gruppe.")
+            return
+        invite_code = g["invite_code"]
+        bot_info = await ctx.bot.get_me()
+        link = f"https://t.me/{bot_info.username}?start=join_{invite_code}_{pid}"
+        await query.edit_message_text(
+            f"🔗 *Einladungslink für {p['name']}:*\n\n"
+            f"`{link}`\n\n"
+            f"Schicke diesen Link an *{p['name']}*.\n"
+            f"Wenn sie/er draufklickt, wird automatisch die Person verknüpft.",
+            parse_mode="Markdown")
+        return
+
+    # ── Person löschen
     if data.startswith("person_del:"):
         pid = int(data.split(":")[1])
         p = db.get_person(pid)

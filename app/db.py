@@ -283,6 +283,39 @@ def join_group(invite_code: str, chat_id: int, person_name: str) -> Optional[int
     return gid
 
 
+def join_group_with_person(invite_code: str, chat_id: int,
+                           person_id: int) -> Optional[int]:
+    """Join a group via invite code and link to an existing person.
+    Returns group_id or None if code invalid."""
+    conn = get_conn()
+    g = conn.execute(
+        "SELECT id FROM groups WHERE invite_code=?", (invite_code,)
+    ).fetchone()
+    if not g:
+        conn.close()
+        return None
+    gid = g["id"]
+    # Check if already member
+    existing = conn.execute(
+        "SELECT id FROM group_members WHERE group_id=? AND chat_id=?",
+        (gid, chat_id)).fetchone()
+    if existing:
+        conn.close()
+        return gid
+    # Link person to this chat
+    conn.execute("UPDATE persons SET chat_id=? WHERE id=? AND group_id=?",
+                 (chat_id, person_id, gid))
+    conn.execute(
+        "INSERT INTO group_members (group_id, chat_id, person_id, role) VALUES (?,?,?,?)",
+        (gid, chat_id, person_id, "member"))
+    conn.execute(
+        "INSERT OR REPLACE INTO active_groups (chat_id, group_id) VALUES (?,?)",
+        (chat_id, gid))
+    conn.commit()
+    conn.close()
+    return gid
+
+
 def get_active_group(chat_id: int) -> Optional[int]:
     conn = get_conn()
     row = conn.execute(
