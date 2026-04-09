@@ -305,12 +305,12 @@ async def cmd_personen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not persons:
         sessions[update.effective_chat.id] = {"stage": "person_add_name"}
         await _reply(update, ctx,
-            f"📂 _{gname}_\n\n"
+            f"📂 {gname}\n\n"
             "Noch keine Personen.\n\n➕ *Name eingeben* um erste Person anzulegen:",
             set_active=True)
         return
     balances = {b["id"]: b for b in db.get_balances(_my_person_id(update.effective_chat.id, gid), gid)}
-    lines = [f"📂 _{gname}_\n👥 *Personen & Salden:*\n"]
+    lines = [f"📂 {gname}\n👥 *Personen & Salden:*\n"]
     for p in persons:
         b = balances.get(p["id"])
         lines.append(_fmt_balance(b) if b else f"• *{p['name']}*")
@@ -370,9 +370,9 @@ async def cmd_saldo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gname = _group_name(gid)
     if not balances:
         await _reply(update, ctx,
-            f"📂 _{gname}_\n\nKeine Daten.\n/person_add [Name]", set_active=False)
+            f"📂 {gname}\n\nKeine Daten.\n/person_add [Name]", set_active=False)
         return
-    lines = [f"📂 _{gname}_\n💰 *Aktuelle Salden:*\n"]
+    lines = [f"📂 {gname}\n💰 *Aktuelle Salden:*\n"]
     for b in balances:
         lines.append(_fmt_balance(b))
         details = []
@@ -457,9 +457,9 @@ async def cmd_verlauf(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     transfers = db.get_cash_transfers(limit=20, group_id=gid)
     gname = _group_name(gid)
     if not transfers:
-        await _reply(update, ctx, f"📂 _{gname}_\n\nNoch keine Zahlungen.", set_active=False)
+        await _reply(update, ctx, f"📂 {gname}\n\nNoch keine Zahlungen.", set_active=False)
         return
-    lines = [f"📂 _{gname}_\n💸 *Letzte Zahlungen:*\n"]
+    lines = [f"📂 {gname}\n💸 *Letzte Zahlungen:*\n"]
     for t in transfers:
         arrow = "📥 von" if t["direction"] == "received" else "📤 an"
         note  = f" · _{t['note']}_" if t.get("note") else ""
@@ -477,9 +477,9 @@ async def cmd_quittungen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     receipts = db.get_receipts(10, gid)
     gname = _group_name(gid)
     if not receipts:
-        await _reply(update, ctx, f"📂 _{gname}_\n\nNoch keine Quittungen.", set_active=False)
+        await _reply(update, ctx, f"📂 {gname}\n\nNoch keine Quittungen.", set_active=False)
         return
-    lines = [f"📂 _{gname}_\n🧾 *Letzte Quittungen:*\n"]
+    lines = [f"📂 {gname}\n🧾 *Letzte Quittungen:*\n"]
     for r in receipts:
         date  = (r["date"] or str(r["uploaded_at"])[:10])
         store = r["store"] or "Unbekannt"
