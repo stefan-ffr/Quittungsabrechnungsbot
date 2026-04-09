@@ -138,6 +138,7 @@ def init_db() -> None:
     has_old_unique = any("autoindex" in (r["name"] or "") for r in old_indexes)
     if has_old_unique:
         conn.executescript("""
+            PRAGMA foreign_keys=OFF;
             CREATE TABLE IF NOT EXISTS persons_new (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 name       TEXT NOT NULL,
@@ -149,6 +150,7 @@ def init_db() -> None:
             DROP TABLE persons;
             ALTER TABLE persons_new RENAME TO persons;
             CREATE UNIQUE INDEX IF NOT EXISTS idx_persons_name_group ON persons(name, group_id);
+            PRAGMA foreign_keys=ON;
         """)
     else:
         conn.execute(
