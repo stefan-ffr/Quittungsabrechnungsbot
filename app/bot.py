@@ -3,7 +3,7 @@ Telegram Bot – Quittungsmanagement & Schulden/Guthaben
 
 Reply-Keyboard:
   IDLE:   Alle Haupt-Aktionen sichtbar
-  AKTIV:  Nur [❌ Abbrechen] – wenn ein Flow läuft
+  AKTIV:  Nur [Abbrechen] – wenn ein Flow laeuft
 """
 import os
 import logging
@@ -41,10 +41,24 @@ def _is_admin(chat_id: int) -> bool:
     return chat_id in ALLOWED_CHAT_IDS
 
 
-def _my_person_id(chat_id: int) -> int | None:
-    """Gibt die person_id zurück wenn der Chat-User mit einer Person verknüpft ist."""
-    p = db.get_person_by_chat(chat_id)
+def _active_group(chat_id: int) -> int | None:
+    return db.get_active_group(chat_id)
+
+
+def _my_person_id(chat_id: int, group_id: int | None = None) -> int | None:
+    """Gibt die person_id zurueck wenn der Chat-User mit einer Person verknuepft ist."""
+    if group_id is not None:
+        p = db.get_person_by_chat(chat_id, group_id)
+    else:
+        p = db.get_person_by_chat(chat_id)
     return p["id"] if p else None
+
+
+def _group_name(group_id: int | None) -> str:
+    if group_id is None:
+        return ""
+    g = db.get_group(group_id)
+    return g["name"] if g else ""
 
 
 # ── Reply-Keyboards ───────────────────────────────────────────────────────────
@@ -53,7 +67,7 @@ KBD_IDLE = ReplyKeyboardMarkup(
     [
         [KeyboardButton("💸 Zahlung buchen"), KeyboardButton("➕ Posten")],
         [KeyboardButton("💰 Saldo"),          KeyboardButton("🧾 Quittungen")],
-        [KeyboardButton("👥 Personen"),        KeyboardButton("❌ Abbrechen")],
+        [KeyboardButton("👥 Personen"),        KeyboardButton("📂 Gruppe")],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -67,12 +81,6 @@ KBD_ACTIVE = ReplyKeyboardMarkup(
 
 
 async def _set_kbd(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, active: bool):
-    """Stilles Keyboard-Update – sendet eine unsichtbare Nachricht mit dem neuen Keyboard."""
-    kbd = KBD_ACTIVE if active else KBD_IDLE
-    # Wir verwenden eine Leerzeichen-Nachricht die sofort gelöscht wird.
-    # Einfacher: wir hängen das Keyboard an die nächste echte Nachricht –
-    # deshalb reichen wir es durch alle reply-Methoden durch.
-    # Diese Hilfsfunktion merkt sich nur den Zustand.
     ctx.chat_data["kbd_active"] = active
 
 
@@ -83,12 +91,6 @@ def _kbd(ctx: ContextTypes.DEFAULT_TYPE) -> ReplyKeyboardMarkup:
 async def _reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
                  text: str, inline: InlineKeyboardMarkup | None = None,
                  set_active: bool | None = None):
-    """
-    Sendet Antwort mit aktuellem Reply-Keyboard.
-    set_active=True  → schaltet auf AKTIV-Keyboard um
-    set_active=False → schaltet zurück auf IDLE-Keyboard
-    set_active=None  → behält aktuellen Zustand
-    """
     if set_active is not None:
         ctx.chat_data["kbd_active"] = set_active
     kbd = _kbd(ctx)
@@ -103,10 +105,6 @@ async def _reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
 async def _send(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int,
                 text: str, set_active: bool | None = None,
                 inline: InlineKeyboardMarkup | None = None):
-    """
-    Sendet eine neue Nachricht (z.B. aus Callback-Handlers heraus).
-    Nutzt ctx.bot.send_message damit das Reply-Keyboard aktualisiert wird.
-    """
     if set_active is not None:
         ctx.chat_data["kbd_active"] = set_active
     kbd = _kbd(ctx)
@@ -123,8 +121,9 @@ async def _send(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int,
 def _persons_toggle_kbd(selected: list[int], callback_prefix: str,
                         confirm_label: str = "✅ Zuweisen",
                         confirm_cb: str = "confirm",
-                        extra: list | None = None) -> InlineKeyboardMarkup:
-    persons = db.get_persons()
+                        extra: list | None = None,
+                        group_id: int | None = None) -> InlineKeyboardMarkup:
+    persons = db.get_persons(group_id)
     rows = []
     for p in persons:
         tick = "✅ " if p["id"] in selected else "◻️ "
@@ -143,8 +142,9 @@ def _persons_toggle_kbd(selected: list[int], callback_prefix: str,
 
 
 def _simple_persons_kbd(callback_prefix: str,
-                        extra: list | None = None) -> InlineKeyboardMarkup:
-    persons = db.get_persons()
+                        extra: list | None = None,
+                        group_id: int | None = None) -> InlineKeyboardMarkup:
+    persons = db.get_persons(group_id)
     rows = [[InlineKeyboardButton(p["name"], callback_data=f"{callback_prefix}:{p['id']}")]
             for p in persons]
     rows.append([InlineKeyboardButton("➕ Person hinzufügen", callback_data="inline_add_person")])
@@ -173,8 +173,53 @@ REPLY_TRIGGERS = {
     "📋 Kontoauszug":    "detail",
     "🧾 Quittungen":     "quittungen",
     "👥 Personen":       "personen",
+    "📂 Gruppe":         "gruppe",
     "❌ Abbrechen":      "abbrechen",
 }
+
+
+# ── Group check helper ───────────────────────────────────────────────────────
+
+async def _ensure_group(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int | None:
+    """
+    Ensure user has an active group. Returns group_id or None.
+    If None, the user has been prompted to create/join a group.
+    """
+    chat_id = update.effective_chat.id
+    gid = _active_group(chat_id)
+    if gid is not None:
+        return gid
+
+    # Auto-migration for existing users
+    migrated = db.ensure_user_has_group(chat_id)
+    if migrated:
+        return migrated
+
+    # No group at all - prompt
+    await _reply(update, ctx,
+        "📂 *Keine Gruppe aktiv*\n\n"
+        "Erstelle eine neue Gruppe oder tritt einer bei:",
+        inline=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Neue Gruppe", callback_data="group_create")],
+            [InlineKeyboardButton("🔗 Gruppe beitreten", callback_data="group_join")],
+        ]),
+        set_active=False)
+    return None
+
+
+async def _ensure_group_cb(query, ctx: ContextTypes.DEFAULT_TYPE, chat_id: int) -> int | None:
+    """Same as _ensure_group but for callback queries."""
+    gid = _active_group(chat_id)
+    if gid is not None:
+        return gid
+    migrated = db.ensure_user_has_group(chat_id)
+    if migrated:
+        return migrated
+    await query.edit_message_text(
+        "📂 *Keine Gruppe aktiv*\n\n"
+        "Nutze /gruppe um eine Gruppe zu erstellen oder beizutreten.",
+        parse_mode="Markdown")
+    return None
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -183,28 +228,89 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update):
         await _request_access(update, ctx)
         return
+    chat_id = update.effective_chat.id
+    gid = _active_group(chat_id)
+    if gid is None:
+        # Auto-migration
+        migrated = db.ensure_user_has_group(chat_id)
+        if migrated:
+            gid = migrated
+        else:
+            # First-use flow: no groups at all
+            await _reply(update, ctx,
+                "👋 *Quittungs-Bot*\n\n"
+                "Willkommen! Um loszulegen, erstelle eine Gruppe oder tritt einer bei:",
+                inline=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("➕ Neue Gruppe", callback_data="group_create")],
+                    [InlineKeyboardButton("🔗 Gruppe beitreten", callback_data="group_join")],
+                ]),
+                set_active=False)
+            return
+
+    gname = _group_name(gid)
     await _reply(update, ctx,
-        "👋 *Quittungs-Bot*\n\n"
+        f"👋 *Quittungs-Bot*\n\n"
+        f"📂 Aktive Gruppe: *{gname}*\n\n"
         "📸 Foto oder PDF einer Quittung senden\n"
         "💸 Zahlung buchen\n"
-        "💰 Saldo & Kontoauszüge\n"
+        "💰 Saldo & Kontoauszuege\n"
         "👥 Personen verwalten\n\n"
         "Nutze die Buttons unten ⬇️",
         set_active=False,
     )
 
 
+async def cmd_gruppe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _auth(update): return
+    chat_id = update.effective_chat.id
+    gid = _active_group(chat_id)
+    groups = db.get_groups_for_chat(chat_id)
+
+    if not groups:
+        await _reply(update, ctx,
+            "📂 *Keine Gruppen*\n\nErstelle eine Gruppe oder tritt einer bei:",
+            inline=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Neue Gruppe", callback_data="group_create")],
+                [InlineKeyboardButton("🔗 Gruppe beitreten", callback_data="group_join")],
+            ]),
+            set_active=False)
+        return
+
+    lines = ["📂 *Gruppen:*\n"]
+    rows = []
+    for g in groups:
+        active = " ✅" if g["id"] == gid else ""
+        role = " (Admin)" if g["role"] == "admin" else ""
+        lines.append(f"• *{g['name']}*{role}{active}")
+        if g["id"] != gid:
+            rows.append([InlineKeyboardButton(
+                f"🔄 Wechseln: {g['name']}", callback_data=f"group_switch:{g['id']}")])
+
+    rows.append([InlineKeyboardButton("➕ Neue Gruppe", callback_data="group_create")])
+    rows.append([InlineKeyboardButton("🔗 Gruppe beitreten", callback_data="group_join")])
+    if gid:
+        rows.append([InlineKeyboardButton("📋 Einladungscode", callback_data="group_invite")])
+        rows.append([InlineKeyboardButton("🚪 Gruppe verlassen", callback_data="group_leave")])
+
+    await _reply(update, ctx, "\n".join(lines),
+                 inline=InlineKeyboardMarkup(rows), set_active=False)
+
+
 async def cmd_personen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
-    persons = db.get_persons()
+    gid = await _ensure_group(update, ctx)
+    if gid is None: return
+    persons = db.get_persons(gid)
+    gname = _group_name(gid)
     if not persons:
         sessions[update.effective_chat.id] = {"stage": "person_add_name"}
         await _reply(update, ctx,
+            f"📂 _{gname}_\n\n"
             "Noch keine Personen.\n\n➕ *Name eingeben* um erste Person anzulegen:",
             set_active=True)
         return
-    balances = {b["id"]: b for b in db.get_balances(_my_person_id(update.effective_chat.id))}
-    lines = ["👥 *Personen & Salden:*\n"]
+    balances = {b["id"]: b for b in db.get_balances(_my_person_id(update.effective_chat.id, gid), gid)}
+    lines = [f"📂 _{gname}_\n👥 *Personen & Salden:*\n"]
     for p in persons:
         b = balances.get(p["id"])
         lines.append(_fmt_balance(b) if b else f"• *{p['name']}*")
@@ -221,30 +327,34 @@ async def cmd_personen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_person_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
+    gid = await _ensure_group(update, ctx)
+    if gid is None: return
     if not ctx.args:
         sessions[update.effective_chat.id] = {"stage": "person_add_name"}
         await _reply(update, ctx, "➕ *Name der neuen Person eingeben:*", set_active=True)
         return
     name = " ".join(ctx.args).strip()
-    db.add_person(name)
-    await _reply(update, ctx, f"✅ *{name}* hinzugefügt.", set_active=False)
+    db.add_person(name, gid)
+    await _reply(update, ctx, f"✅ *{name}* hinzugefuegt.", set_active=False)
 
 
 async def cmd_person_del(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
+    gid = await _ensure_group(update, ctx)
+    if gid is None: return
     if not ctx.args:
-        persons = db.get_persons()
+        persons = db.get_persons(gid)
         if not persons:
             await _reply(update, ctx, "Keine Personen vorhanden.", set_active=False)
             return
         rows = [[InlineKeyboardButton(f"🗑️ {p['name']}", callback_data=f"person_del:{p['id']}")]
                 for p in persons]
         rows.append([InlineKeyboardButton("❌ Abbrechen", callback_data="cancel")])
-        await _reply(update, ctx, "🗑️ *Welche Person löschen?*",
+        await _reply(update, ctx, "🗑️ *Welche Person loeschen?*",
                      inline=InlineKeyboardMarkup(rows), set_active=True)
         return
     name = " ".join(ctx.args).strip()
-    match = next((p for p in db.get_persons() if p["name"].lower() == name.lower()), None)
+    match = next((p for p in db.get_persons(gid) if p["name"].lower() == name.lower()), None)
     if not match:
         await _reply(update, ctx, f"❌ '{name}' nicht gefunden.")
         return
@@ -254,17 +364,21 @@ async def cmd_person_del(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_saldo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
-    balances = db.get_balances(_my_person_id(update.effective_chat.id))
+    gid = await _ensure_group(update, ctx)
+    if gid is None: return
+    balances = db.get_balances(_my_person_id(update.effective_chat.id, gid), gid)
+    gname = _group_name(gid)
     if not balances:
-        await _reply(update, ctx, "Keine Daten.\n/person_add [Name]", set_active=False)
+        await _reply(update, ctx,
+            f"📂 _{gname}_\n\nKeine Daten.\n/person_add [Name]", set_active=False)
         return
-    lines = ["💰 *Aktuelle Salden:*\n"]
+    lines = [f"📂 _{gname}_\n💰 *Aktuelle Salden:*\n"]
     for b in balances:
         lines.append(_fmt_balance(b))
         details = []
         if b["owed_me"] > 0:  details.append(f"Quitt. von dir: +{CURRENCY} {b['owed_me']:.2f}")
-        if b["i_owe"] > 0:    details.append(f"Quitt. von ihnen: −{CURRENCY} {b['i_owe']:.2f}")
-        if b["received"] > 0: details.append(f"Erhalten: −{CURRENCY} {b['received']:.2f}")
+        if b["i_owe"] > 0:    details.append(f"Quitt. von ihnen: -{CURRENCY} {b['i_owe']:.2f}")
+        if b["received"] > 0: details.append(f"Erhalten: -{CURRENCY} {b['received']:.2f}")
         if b["paid"] > 0:     details.append(f"Gegeben: +{CURRENCY} {b['paid']:.2f}")
         if details:
             lines.append("   ↳ " + " | ".join(details))
@@ -282,23 +396,26 @@ async def cmd_saldo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
+    gid = await _ensure_group(update, ctx)
+    if gid is None: return
     if ctx.args:
         name = " ".join(ctx.args).strip()
-        p = next((x for x in db.get_persons() if x["name"].lower() == name.lower()), None)
+        p = next((x for x in db.get_persons(gid) if x["name"].lower() == name.lower()), None)
         if not p:
             await _reply(update, ctx, f"❌ '{name}' nicht gefunden.")
             return
         await _send_detail(ctx, update.effective_chat.id, p["id"])
     else:
         sessions[update.effective_chat.id] = {"stage": "detail_select"}
-        await _reply(update, ctx, "Für wen?",
-                     inline=_simple_persons_kbd("detail"),
+        await _reply(update, ctx, "Fuer wen?",
+                     inline=_simple_persons_kbd("detail", group_id=gid),
                      set_active=True)
 
 
 async def _send_detail(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, person_id: int):
+    gid = _active_group(chat_id)
     hist     = db.get_person_history(person_id)
-    balances = {b["id"]: b for b in db.get_balances(_my_person_id(chat_id))}
+    balances = {b["id"]: b for b in db.get_balances(_my_person_id(chat_id, gid), gid)}
     b        = balances.get(person_id, {})
     name     = hist["person"].get("name", "?")
     lines    = [f"📋 *Kontoauszug: {name}*\n", _fmt_balance(b) if b else "", ""]
@@ -328,35 +445,41 @@ async def _send_detail(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, person_id: 
             lines.append(f"  • {arrow}: {CURRENCY} {t['amount']:.2f}{note} [{date}]")
 
     if not hist["items_owe_me"] and not hist["receipts_they_paid"] and not hist["transfers"]:
-        lines.append("_Noch keine Einträge._")
+        lines.append("_Noch keine Eintraege._")
 
     await _send(ctx, chat_id, "\n".join(lines), set_active=False)
 
 
 async def cmd_verlauf(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
-    transfers = db.get_cash_transfers(limit=20)
+    gid = await _ensure_group(update, ctx)
+    if gid is None: return
+    transfers = db.get_cash_transfers(limit=20, group_id=gid)
+    gname = _group_name(gid)
     if not transfers:
-        await _reply(update, ctx, "Noch keine Zahlungen.", set_active=False)
+        await _reply(update, ctx, f"📂 _{gname}_\n\nNoch keine Zahlungen.", set_active=False)
         return
-    lines = ["💸 *Letzte Zahlungen:*\n"]
+    lines = [f"📂 _{gname}_\n💸 *Letzte Zahlungen:*\n"]
     for t in transfers:
         arrow = "📥 von" if t["direction"] == "received" else "📤 an"
         note  = f" · _{t['note']}_" if t.get("note") else ""
         date  = str(t.get("created_at", ""))[:10]
         lines.append(f"[{t['id']}] {arrow} *{t['name']}*: {CURRENCY} {t['amount']:.2f}{note} [{date}]")
-    rows = [[InlineKeyboardButton("🗑️ Letzte Zahlung löschen", callback_data="del:last_transfer")]]
+    rows = [[InlineKeyboardButton("🗑️ Letzte Zahlung loeschen", callback_data="del:last_transfer")]]
     await _reply(update, ctx, "\n".join(lines),
                  inline=InlineKeyboardMarkup(rows), set_active=False)
 
 
 async def cmd_quittungen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
-    receipts = db.get_receipts(10)
+    gid = await _ensure_group(update, ctx)
+    if gid is None: return
+    receipts = db.get_receipts(10, gid)
+    gname = _group_name(gid)
     if not receipts:
-        await _reply(update, ctx, "Noch keine Quittungen.", set_active=False)
+        await _reply(update, ctx, f"📂 _{gname}_\n\nNoch keine Quittungen.", set_active=False)
         return
-    lines = ["🧾 *Letzte Quittungen:*\n"]
+    lines = [f"📂 _{gname}_\n🧾 *Letzte Quittungen:*\n"]
     for r in receipts:
         date  = (r["date"] or str(r["uploaded_at"])[:10])
         store = r["store"] or "Unbekannt"
@@ -367,13 +490,15 @@ async def cmd_quittungen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"📋 {(r['store'] or 'Quittung')[:20]} – {(r['date'] or '')[:10]}",
         callback_data=f"receipt_detail:{r['id']}"
     )] for r in receipts]
-    rows.append([InlineKeyboardButton("🗑️ Letzte Quittung löschen", callback_data="del:last_receipt")])
+    rows.append([InlineKeyboardButton("🗑️ Letzte Quittung loeschen", callback_data="del:last_receipt")])
     await _reply(update, ctx, "\n".join(lines),
                  inline=InlineKeyboardMarkup(rows), set_active=False)
 
 
 async def cmd_geld(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
+    gid = await _ensure_group(update, ctx)
+    if gid is None: return
     sessions[update.effective_chat.id] = {"stage": "geld_direction"}
     await _reply(update, ctx,
         "💸 *Zahlung buchen*\n\nIn welche Richtung?",
@@ -388,7 +513,7 @@ async def cmd_geld(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_loeschen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
-    await _reply(update, ctx, "Was löschen?",
+    await _reply(update, ctx, "Was loeschen?",
         inline=InlineKeyboardMarkup([
             [InlineKeyboardButton("💸 Letzte Zahlung",  callback_data="del:last_transfer")],
             [InlineKeyboardButton("🧾 Letzte Quittung", callback_data="del:last_receipt")],
@@ -400,6 +525,8 @@ async def cmd_loeschen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_posten(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
+    gid = await _ensure_group(update, ctx)
+    if gid is None: return
     sessions[update.effective_chat.id] = {"stage": "posten_desc"}
     await _reply(update, ctx,
         "➕ *Manueller Posten*\n\n📝 Beschreibung eingeben (z.B. _Pizza bestellt_):",
@@ -419,6 +546,16 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _request_access(update, ctx)
         return
     chat_id = update.effective_chat.id
+    gid = _active_group(chat_id)
+    if gid is None:
+        migrated = db.ensure_user_has_group(chat_id)
+        if migrated:
+            gid = migrated
+        else:
+            await _reply(update, ctx,
+                "📂 *Keine Gruppe aktiv*\n\nNutze /gruppe um eine Gruppe zu erstellen.",
+                set_active=False)
+            return
 
     # Sofort auf AKTIV-Keyboard umschalten
     ctx.chat_data["kbd_active"] = True
@@ -434,7 +571,7 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         mime    = update.message.document.mime_type or "application/octet-stream"
     else:
         await msg.delete()
-        await _send(ctx, chat_id, "❌ Nicht unterstützter Dateityp.", set_active=False)
+        await _send(ctx, chat_id, "❌ Nicht unterstuetzter Dateityp.", set_active=False)
         return
 
     os.makedirs(UPLOAD_PATH, exist_ok=True)
@@ -468,6 +605,7 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         file_path= local_path,
         payer_id = None,
         my_share = 0.0,
+        group_id = gid,
     )
 
     raw_items = data.get("items", [])
@@ -497,8 +635,8 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     total = data.get("total") or sum(i["amount"] for i in items_s)
     lines = []
     for i, it in enumerate(items_s, 1):
-        qty = f"×{int(it['quantity'])} " if it["quantity"] != 1 else ""
-        lines.append(f"  {i}. {it['description']} {qty}→ {cur} {it['amount']:.2f}")
+        qty = f"x{int(it['quantity'])} " if it["quantity"] != 1 else ""
+        lines.append(f"  {i}. {it['description']} {qty}-> {cur} {it['amount']:.2f}")
 
     text = (
         f"🧾 *{data.get('store','?')}*"
@@ -507,7 +645,7 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         + f"\n\n💰 *Total: {cur} {total:.2f}*"
         + "\n\n❓ *Wer hat gezahlt?*"
     )
-    persons = db.get_persons()
+    persons = db.get_persons(gid)
     kbd = [[InlineKeyboardButton("👤 Ich habe gezahlt", callback_data="payer:me")]]
     for p in persons:
         kbd.append([InlineKeyboardButton(f"💳 {p['name']} hat gezahlt",
@@ -520,16 +658,16 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Zuweisung Keyboards ───────────────────────────────────────────────────────
 
-def _assign_start_kbd(payer_is_me: bool) -> InlineKeyboardMarkup:
-    persons = db.get_persons()
+def _assign_start_kbd(payer_is_me: bool, group_id: int | None = None) -> InlineKeyboardMarkup:
+    persons = db.get_persons(group_id)
     rows = [[InlineKeyboardButton(
-        "👥 Personen wählen (gleich aufteilen)", callback_data="assign_pick_all"
+        "👥 Personen waehlen (gleich aufteilen)", callback_data="assign_pick_all"
     )]]
     for p in persons:
-        label = f"Alles → {p['name']}" if payer_is_me else f"Alles konsumiert: {p['name']}"
+        label = f"Alles -> {p['name']}" if payer_is_me else f"Alles konsumiert: {p['name']}"
         rows.append([InlineKeyboardButton(label, callback_data=f"assign_one:{p['id']}")])
     rows.append([InlineKeyboardButton("➕ Person hinzufügen", callback_data="inline_add_person")])
-    rows.append([InlineKeyboardButton("🔀 Manuell (Position für Position)",
+    rows.append([InlineKeyboardButton("🔀 Manuell (Position fuer Position)",
                                       callback_data="assign_manual")])
     rows.append([InlineKeyboardButton("❌ Abbrechen", callback_data="cancel")])
     return InlineKeyboardMarkup(rows)
@@ -543,6 +681,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     data    = query.data
     session = sessions.get(chat_id, {})
+    gid     = _active_group(chat_id)
 
     if data == "noop":
         return
@@ -553,7 +692,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         req_chat_id = int(parts[1])
         req_name = parts[2] if len(parts) > 2 else str(req_chat_id)
         if not _is_admin(chat_id):
-            await query.answer("Nur Admins können Zugriff erteilen.", show_alert=True)
+            await query.answer("Nur Admins koennen Zugriff erteilen.", show_alert=True)
             return
         db.add_allowed_chat(req_chat_id, req_name, chat_id)
         _pending_requests.discard(req_chat_id)
@@ -572,7 +711,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data.startswith("access_deny:"):
         req_chat_id = int(data.split(":")[1])
         if not _is_admin(chat_id):
-            await query.answer("Nur Admins können Zugriff verweigern.", show_alert=True)
+            await query.answer("Nur Admins koennen Zugriff verweigern.", show_alert=True)
             return
         _pending_requests.discard(req_chat_id)
         await query.edit_message_text("❌ Anfrage abgelehnt.")
@@ -583,7 +722,73 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             log.warning("Could not notify user %s", req_chat_id)
         return
 
-    # ── Inline Person hinzufügen
+    # ── Group callbacks ──────────────────────────────────────────────────────
+
+    if data == "group_create":
+        session["stage"] = "group_create_name"
+        sessions[chat_id] = session
+        await query.edit_message_text(
+            "➕ *Neue Gruppe erstellen*\n\nName der Gruppe eingeben:",
+            parse_mode="Markdown")
+        return
+
+    if data == "group_join":
+        session["stage"] = "group_join_code"
+        sessions[chat_id] = session
+        await query.edit_message_text(
+            "🔗 *Gruppe beitreten*\n\nEinladungscode eingeben:",
+            parse_mode="Markdown")
+        return
+
+    if data.startswith("group_switch:"):
+        new_gid = int(data.split(":")[1])
+        db.set_active_group(chat_id, new_gid)
+        g = db.get_group(new_gid)
+        gname = g["name"] if g else "?"
+        sessions.pop(chat_id, None)
+        await query.edit_message_text(
+            f"✅ Aktive Gruppe: *{gname}*", parse_mode="Markdown")
+        await _send(ctx, chat_id, f"📂 Gruppe gewechselt zu *{gname}*.", set_active=False)
+        return
+
+    if data == "group_invite":
+        if gid is None:
+            await query.edit_message_text("❌ Keine aktive Gruppe.")
+            return
+        g = db.get_group(gid)
+        if g:
+            await query.edit_message_text(
+                f"📋 *Einladungscode fuer {g['name']}:*\n\n"
+                f"`{g['invite_code']}`\n\n"
+                f"Teile diesen Code, damit andere beitreten koennen.",
+                parse_mode="Markdown")
+        return
+
+    if data == "group_leave":
+        if gid is None:
+            await query.edit_message_text("❌ Keine aktive Gruppe.")
+            return
+        g = db.get_group(gid)
+        gname = g["name"] if g else "?"
+        db.leave_group(chat_id, gid)
+        sessions.pop(chat_id, None)
+        new_gid = _active_group(chat_id)
+        if new_gid:
+            new_g = db.get_group(new_gid)
+            new_name = new_g["name"] if new_g else "?"
+            await query.edit_message_text(
+                f"🚪 Du hast *{gname}* verlassen.\n"
+                f"Aktive Gruppe: *{new_name}*",
+                parse_mode="Markdown")
+        else:
+            await query.edit_message_text(
+                f"🚪 Du hast *{gname}* verlassen.\n\n"
+                f"Du bist in keiner Gruppe mehr. Nutze /gruppe um eine neue zu erstellen.",
+                parse_mode="Markdown")
+        await _send(ctx, chat_id, "Bereit.", set_active=False)
+        return
+
+    # ── Inline Person hinzufuegen
     if data == "inline_add_person":
         session["_pre_add_stage"] = session.get("stage", "")
         session["stage"] = "inline_add_person"
@@ -598,7 +803,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _send(ctx, chat_id, "Bereit.", set_active=False)
         return
 
-    # ── Person hinzufügen (aus Personen-Menü)
+    # ── Person hinzufuegen (aus Personen-Menue)
     if data == "person_add_start":
         session["stage"] = "person_add_name"
         sessions[chat_id] = session
@@ -606,7 +811,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                                       parse_mode="Markdown")
         return
 
-    # ── Person löschen
+    # ── Person loeschen
     if data.startswith("person_del:"):
         pid = int(data.split(":")[1])
         p = db.get_person(pid)
@@ -620,7 +825,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # ── Quittung Detail
     if data.startswith("receipt_detail:"):
         rid = int(data.split(":")[1])
-        receipts = db.get_receipts(50)
+        receipts = db.get_receipts(50, gid)
         r = next((x for x in receipts if x["id"] == rid), None)
         if not r:
             await query.edit_message_text("❌ Quittung nicht gefunden.")
@@ -637,25 +842,25 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ]
         for it in items:
             assigned = it["person_names"] or "—"
-            qty = f"×{int(it['quantity'])} " if it["quantity"] and it["quantity"] != 1 else ""
-            lines.append(f"  • {it['description']} {qty}→ {CURRENCY} {it['amount']:.2f}")
+            qty = f"x{int(it['quantity'])} " if it["quantity"] and it["quantity"] != 1 else ""
+            lines.append(f"  • {it['description']} {qty}-> {CURRENCY} {it['amount']:.2f}")
             lines.append(f"    ↳ {assigned}")
         kbd = [
-            [InlineKeyboardButton("💳 Zahler ändern", callback_data=f"edit_payer:{rid}")],
-            [InlineKeyboardButton("🔀 Zuweisungen ändern", callback_data=f"edit_assign:{rid}")],
-            [InlineKeyboardButton("🗑️ Quittung löschen", callback_data=f"del:receipt:{rid}")],
+            [InlineKeyboardButton("💳 Zahler aendern", callback_data=f"edit_payer:{rid}")],
+            [InlineKeyboardButton("🔀 Zuweisungen aendern", callback_data=f"edit_assign:{rid}")],
+            [InlineKeyboardButton("🗑️ Quittung loeschen", callback_data=f"del:receipt:{rid}")],
         ]
         await query.edit_message_text("\n".join(lines),
                                       reply_markup=InlineKeyboardMarkup(kbd),
                                       parse_mode="Markdown")
         return
 
-    # ── Quittung: Zahler ändern
+    # ── Quittung: Zahler aendern
     if data.startswith("edit_payer:"):
         rid = int(data.split(":")[1])
         session.update({"stage": "edit_payer_select", "edit_receipt_id": rid})
         sessions[chat_id] = session
-        persons = db.get_persons()
+        persons = db.get_persons(gid)
         kbd = [[InlineKeyboardButton("👤 Ich habe gezahlt", callback_data=f"set_payer:{rid}:me")]]
         for p in persons:
             kbd.append([InlineKeyboardButton(
@@ -673,29 +878,29 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         who = parts[2]
         if who == "me":
             db.update_receipt_payer(rid, None, 0.0)
-            await query.edit_message_text("✅ Zahler auf *dich* geändert.", parse_mode="Markdown")
+            await query.edit_message_text("✅ Zahler auf *dich* geaendert.", parse_mode="Markdown")
         else:
             pid = int(who)
             p = db.get_person(pid)
             pname = p["name"] if p else "?"
             # Recalculate my_share
-            total_r = db.get_receipts(50)
+            total_r = db.get_receipts(50, gid)
             r = next((x for x in total_r if x["id"] == rid), None)
             total = r["total"] if r else 0
             assigned = db.get_total_assigned(rid)
             my_share = round(max(total - assigned, 0), 2)
             db.update_receipt_payer(rid, pid, my_share)
             await query.edit_message_text(
-                f"✅ Zahler auf *{pname}* geändert.", parse_mode="Markdown")
+                f"✅ Zahler auf *{pname}* geaendert.", parse_mode="Markdown")
         sessions.pop(chat_id, None)
         await _send(ctx, chat_id, "Erledigt.", set_active=False)
         return
 
-    # ── Quittung: Zuweisungen ändern
+    # ── Quittung: Zuweisungen aendern
     if data.startswith("edit_assign:"):
         rid = int(data.split(":")[1])
         items_raw = db.get_items_for_receipt(rid)
-        receipts = db.get_receipts(50)
+        receipts = db.get_receipts(50, gid)
         r = next((x for x in receipts if x["id"] == rid), None)
         items_s = [
             {"id": it["id"], "description": it["description"],
@@ -714,18 +919,18 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "selected_item": [],
         })
         sessions[chat_id] = session
-        await _show_manual_item(query, session)
+        await _show_manual_item(query, session, gid)
         return
 
-    # ── Quittung: einzelne löschen
+    # ── Quittung: einzelne loeschen
     if data.startswith("del:receipt:"):
         rid = int(data.split(":")[2])
-        receipts = db.get_receipts(50)
+        receipts = db.get_receipts(50, gid)
         r = next((x for x in receipts if x["id"] == rid), None)
         if r:
             db.delete_receipt(rid)
             await query.edit_message_text(
-                f"🗑️ Quittung gelöscht: *{r['store'] or 'Quittung'}* {CURRENCY} {r['total']:.2f}",
+                f"🗑️ Quittung geloescht: *{r['store'] or 'Quittung'}* {CURRENCY} {r['total']:.2f}",
                 parse_mode="Markdown")
         else:
             await query.edit_message_text("❌ Quittung nicht gefunden.")
@@ -747,7 +952,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         items = session.get("items", [])
         cur   = session.get("data", {}).get("currency", CURRENCY)
         total = session.get("data", {}).get("total") or sum(i["amount"] for i in items)
-        p_map = {p["id"]: p["name"] for p in db.get_persons()}
+        p_map = {p["id"]: p["name"] for p in db.get_persons(gid)}
 
         if who == "me":
             db.update_receipt_payer(session["receipt_id"], None, 0.0)
@@ -755,7 +960,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             sessions[chat_id] = session
             await query.edit_message_text(
                 f"✅ Du hast gezahlt ({cur} {total:.2f}).\n\n*Wem werden die Kosten zugewiesen?*",
-                reply_markup=_assign_start_kbd(payer_is_me=True),
+                reply_markup=_assign_start_kbd(payer_is_me=True, group_id=gid),
                 parse_mode="Markdown"
             )
         else:
@@ -768,7 +973,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"💳 *{pname}* hat {cur} {total:.2f} gezahlt.\n\n"
                 f"*Wem werden die Kosten zugewiesen?*\n"
                 f"_(Was nicht zugewiesen wird = dein Anteil)_",
-                reply_markup=_assign_start_kbd(payer_is_me=False),
+                reply_markup=_assign_start_kbd(payer_is_me=False, group_id=gid),
                 parse_mode="Markdown"
             )
         return
@@ -792,11 +997,12 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"👥 *Wer teilt sich die Kosten?*\n"
             f"Total: {cur} {total:.2f} – wird gleich aufgeteilt\n\n"
-            f"_(Mehrere wählbar)_",
+            f"_(Mehrere waehlbar)_",
             reply_markup=_persons_toggle_kbd(
                 [], "pick_all_toggle",
                 confirm_label="✅ Aufteilen",
-                confirm_cb="pick_all_confirm"
+                confirm_cb="pick_all_confirm",
+                group_id=gid
             ),
             parse_mode="Markdown"
         )
@@ -814,12 +1020,13 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         cur   = session.get("data", {}).get("currency", CURRENCY)
         n     = len(selected)
         each  = total / n if n else 0
-        share_info = f"\n→ {cur} {each:.2f} je Person" if n else ""
+        share_info = f"\n-> {cur} {each:.2f} je Person" if n else ""
         await query.edit_message_reply_markup(
             reply_markup=_persons_toggle_kbd(
                 selected, "pick_all_toggle",
                 confirm_label=f"✅ Aufteilen{share_info}",
-                confirm_cb="pick_all_confirm"
+                confirm_cb="pick_all_confirm",
+                group_id=gid
             )
         )
         return
@@ -827,7 +1034,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "pick_all_confirm":
         selected = session.get("selected_all", [])
         if not selected:
-            await query.answer("Mindestens eine Person auswählen!", show_alert=True)
+            await query.answer("Mindestens eine Person auswaehlen!", show_alert=True)
             return
         items = session.get("items", [])
         for item in items:
@@ -839,7 +1046,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "assign_manual":
         session.update({"stage": "manual", "manual_idx": 0, "selected_item": []})
         sessions[chat_id] = session
-        await _show_manual_item(query, session)
+        await _show_manual_item(query, session, gid)
         return
 
     if data.startswith("itm_toggle:"):
@@ -855,13 +1062,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         n     = len(selected)
         each  = item["amount"] / n if n else 0
         cur   = session.get("data", {}).get("currency", CURRENCY)
-        share_info = f"\n→ {cur} {each:.2f} je" if n else ""
+        share_info = f"\n-> {cur} {each:.2f} je" if n else ""
         await query.edit_message_reply_markup(
             reply_markup=_persons_toggle_kbd(
                 selected, "itm_toggle",
                 confirm_label=f"✅ Zuweisen{share_info}",
                 confirm_cb="itm_confirm",
-                extra=[[InlineKeyboardButton("⏭ Überspringen", callback_data="skip_item")]]
+                extra=[[InlineKeyboardButton("⏭ Ueberspringen", callback_data="skip_item")]],
+                group_id=gid
             )
         )
         return
@@ -869,7 +1077,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "itm_confirm":
         selected = session.get("selected_item", [])
         if not selected:
-            await query.answer("Mindestens eine Person auswählen!", show_alert=True)
+            await query.answer("Mindestens eine Person auswaehlen!", show_alert=True)
             return
         items = session.get("items", [])
         idx   = session.get("manual_idx", 0)
@@ -880,7 +1088,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if session["manual_idx"] >= len(items):
             await _finish_assignment(query, ctx, chat_id, session, items)
         else:
-            await _show_manual_item(query, session)
+            await _show_manual_item(query, session, gid)
         return
 
     if data == "skip_item":
@@ -891,7 +1099,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if session["manual_idx"] >= len(items):
             await _finish_assignment(query, ctx, chat_id, session, items)
         else:
-            await _show_manual_item(query, session)
+            await _show_manual_item(query, session, gid)
         return
 
     # ── GELD: Richtung
@@ -902,7 +1110,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         label = "gibt dir Geld" if direction == "received" else "bekommt Geld"
         await query.edit_message_text(
             f"💸 Wer {label}?",
-            reply_markup=_simple_persons_kbd("geld_person")
+            reply_markup=_simple_persons_kbd("geld_person", group_id=gid)
         )
         return
 
@@ -921,15 +1129,15 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(prompt, parse_mode="Markdown")
         return
 
-    # ── LÖSCHEN
+    # ── LOESCHEN
     if data == "del:last_transfer":
-        transfers = db.get_cash_transfers(limit=1)
+        transfers = db.get_cash_transfers(limit=1, group_id=gid)
         sessions.pop(chat_id, None)
         if transfers:
             t = transfers[0]
             db.delete_cash_transfer(t["id"])
             await query.edit_message_text(
-                f"🗑️ Zahlung gelöscht: *{t['name']}* {CURRENCY} {t['amount']:.2f}",
+                f"🗑️ Zahlung geloescht: *{t['name']}* {CURRENCY} {t['amount']:.2f}",
                 parse_mode="Markdown"
             )
         else:
@@ -938,13 +1146,13 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "del:last_receipt":
-        receipts = db.get_receipts(1)
+        receipts = db.get_receipts(1, gid)
         sessions.pop(chat_id, None)
         if receipts:
             r = receipts[0]
             db.delete_receipt(r["id"])
             await query.edit_message_text(
-                f"🗑️ Quittung gelöscht: *{r['store'] or 'Quittung'}* {CURRENCY} {r['total']:.2f}",
+                f"🗑️ Quittung geloescht: *{r['store'] or 'Quittung'}* {CURRENCY} {r['total']:.2f}",
                 parse_mode="Markdown"
             )
         else:
@@ -952,7 +1160,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _send(ctx, chat_id, "Erledigt.", set_active=False)
         return
 
-    # ── Notiz überspringen
+    # ── Notiz ueberspringen
     if data == "note_skip":
         stage = session.get("stage")
         if stage == "geld_note":
@@ -965,12 +1173,13 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def _rebuild_person_keyboard(ctx: ContextTypes.DEFAULT_TYPE,
                                    chat_id: int, session: dict, stage: str):
     """Nach Inline-Person-Erstellung das passende Keyboard neu senden."""
+    gid = _active_group(chat_id)
     items = session.get("items", [])
     cur = session.get("data", {}).get("currency", CURRENCY) if session.get("data") else CURRENCY
 
     if stage == "payer_select":
         total = session.get("data", {}).get("total") or sum(i["amount"] for i in items)
-        persons = db.get_persons()
+        persons = db.get_persons(gid)
         kbd = [[InlineKeyboardButton("👤 Ich habe gezahlt", callback_data="payer:me")]]
         for p in persons:
             kbd.append([InlineKeyboardButton(f"💳 {p['name']} hat gezahlt",
@@ -983,20 +1192,21 @@ async def _rebuild_person_keyboard(ctx: ContextTypes.DEFAULT_TYPE,
     elif stage == "assign_method":
         payer_is_me = session.get("payer_id") is None
         await _send(ctx, chat_id, "*Wem werden die Kosten zugewiesen?*",
-                    inline=_assign_start_kbd(payer_is_me=payer_is_me))
+                    inline=_assign_start_kbd(payer_is_me=payer_is_me, group_id=gid))
 
     elif stage == "pick_all":
         selected = session.get("selected_all", [])
         total = sum(i["amount"] for i in items)
         n = len(selected)
         each = total / n if n else 0
-        share_info = f"\n→ {cur} {each:.2f} je Person" if n else ""
+        share_info = f"\n-> {cur} {each:.2f} je Person" if n else ""
         await _send(ctx, chat_id,
-            f"👥 *Wer teilt sich die Kosten?*\nTotal: {cur} {total:.2f}\n_(Mehrere wählbar)_",
+            f"👥 *Wer teilt sich die Kosten?*\nTotal: {cur} {total:.2f}\n_(Mehrere waehlbar)_",
             inline=_persons_toggle_kbd(
                 selected, "pick_all_toggle",
                 confirm_label=f"✅ Aufteilen{share_info}",
-                confirm_cb="pick_all_confirm"
+                confirm_cb="pick_all_confirm",
+                group_id=gid
             ))
 
     elif stage == "manual":
@@ -1005,11 +1215,11 @@ async def _rebuild_person_keyboard(ctx: ContextTypes.DEFAULT_TYPE,
         if idx < len(items):
             item = items[idx]
             payer_is_me = session.get("payer_id") is None
-            qty_txt = f"×{int(item['quantity'])} " if item["quantity"] != 1 else ""
+            qty_txt = f"x{int(item['quantity'])} " if item["quantity"] != 1 else ""
             hint = "Wem wird zugewiesen?" if payer_is_me else f"Wer hat's konsumiert?"
             n = len(selected)
             each = item["amount"] / n if n else 0
-            share_info = f"\n→ {cur} {each:.2f} je" if n else ""
+            share_info = f"\n-> {cur} {each:.2f} je" if n else ""
             text = (
                 f"📦 *Position {idx+1}/{len(items)}*\n\n"
                 f"*{item['description']}* {qty_txt}\n"
@@ -1020,39 +1230,40 @@ async def _rebuild_person_keyboard(ctx: ContextTypes.DEFAULT_TYPE,
                             selected, "itm_toggle",
                             confirm_label=f"✅ Zuweisen{share_info}",
                             confirm_cb="itm_confirm",
-                            extra=[[InlineKeyboardButton("⏭ Überspringen", callback_data="skip_item")]]
+                            extra=[[InlineKeyboardButton("⏭ Ueberspringen", callback_data="skip_item")]],
+                            group_id=gid
                         ))
 
     elif stage == "geld_person":
         d = session.get("direction", "received")
         label = "gibt dir Geld" if d == "received" else "bekommt Geld"
         await _send(ctx, chat_id, f"💸 Wer {label}?",
-                    inline=_simple_persons_kbd("geld_person"))
+                    inline=_simple_persons_kbd("geld_person", group_id=gid))
 
     elif stage == "detail_select":
-        await _send(ctx, chat_id, "Für wen?",
-                    inline=_simple_persons_kbd("detail"))
+        await _send(ctx, chat_id, "Fuer wen?",
+                    inline=_simple_persons_kbd("detail", group_id=gid))
 
 
-async def _show_manual_item(query, session: dict):
+async def _show_manual_item(query, session: dict, group_id: int | None = None):
     items    = session.get("items", [])
     idx      = session.get("manual_idx", 0)
     item     = items[idx]
     selected = session.get("selected_item", [])
     cur      = session.get("data", {}).get("currency", CURRENCY)
     payer_is_me = session.get("payer_id") is None
-    qty_txt  = f"×{int(item['quantity'])} " if item["quantity"] != 1 else ""
+    qty_txt  = f"x{int(item['quantity'])} " if item["quantity"] != 1 else ""
     hint = "Wem wird zugewiesen?" if payer_is_me else f"Wer hat's konsumiert? (schuldet {session.get('payer_name','?')})"
     n    = len(selected)
     each = item["amount"] / n if n else 0
-    share_info = f"\n→ {cur} {each:.2f} je" if n else ""
+    share_info = f"\n-> {cur} {each:.2f} je" if n else ""
 
     text = (
         f"📦 *Position {idx+1}/{len(items)}*\n\n"
         f"*{item['description']}* {qty_txt}\n"
         f"💶 {cur} {item['amount']:.2f}\n\n"
         f"_{hint}_\n"
-        f"_(Mehrere Personen wählbar)_"
+        f"_(Mehrere Personen waehlbar)_"
     )
     await query.edit_message_text(
         text,
@@ -1060,7 +1271,8 @@ async def _show_manual_item(query, session: dict):
             selected, "itm_toggle",
             confirm_label=f"✅ Zuweisen{share_info}",
             confirm_cb="itm_confirm",
-            extra=[[InlineKeyboardButton("⏭ Überspringen", callback_data="skip_item")]]
+            extra=[[InlineKeyboardButton("⏭ Ueberspringen", callback_data="skip_item")]],
+            group_id=group_id
         ),
         parse_mode="Markdown"
     )
@@ -1087,18 +1299,17 @@ async def _finish_assignment(query, ctx: ContextTypes.DEFAULT_TYPE,
                f"📌 Dein Anteil: {cur} {my_share:.2f}")
 
     await query.edit_message_text(msg, parse_mode="Markdown")
-    await _send(ctx, chat_id, "Gespeichert. /saldo für Übersicht.", set_active=False)
-
-
+    await _send(ctx, chat_id, "Gespeichert. /saldo fuer Uebersicht.", set_active=False)
 
 
 async def _save_geld(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int,
                      session: dict, note: str = ""):
+    gid = _active_group(chat_id)
     person_id = session["person_id"]
     amount    = session["amount"]
     direction = session["direction"]
     sessions.pop(chat_id, None)
-    db.add_cash_transfer(person_id, amount, direction, note)
+    db.add_cash_transfer(person_id, amount, direction, note, group_id=gid)
     p     = db.get_person(person_id)
     pname = p["name"] if p else "?"
     note_txt = f"\n_Notiz: {note}_" if note else ""
@@ -1158,6 +1369,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "detail":     cmd_detail,
             "quittungen": cmd_quittungen,
             "personen":   cmd_personen,
+            "gruppe":     cmd_gruppe,
             "abbrechen":  cmd_abbrechen,
         }
         if cmd in handlers:
@@ -1166,16 +1378,100 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     session = sessions.get(chat_id, {})
     raw     = text.replace(",", ".")
+    gid     = _active_group(chat_id)
 
-    # ── Person hinzufügen (standalone)
+    # ── Group creation: name
+    if session.get("stage") == "group_create_name":
+        name = text.strip()
+        if not name:
+            await _reply(update, ctx, "❌ Name darf nicht leer sein.")
+            return
+        session.update({"group_name": name, "stage": "group_create_person_name"})
+        sessions[chat_id] = session
+        await _reply(update, ctx,
+            f"📂 Gruppe *{name}* wird erstellt.\n\n"
+            "👤 Wie heisst du in dieser Gruppe? (Dein Anzeigename):")
+        return
+
+    # ── Group creation: person name
+    if session.get("stage") == "group_create_person_name":
+        person_name = text.strip()
+        if not person_name:
+            await _reply(update, ctx, "❌ Name darf nicht leer sein.")
+            return
+        group_name = session.get("group_name", "Gruppe")
+        new_gid = db.create_group(group_name, chat_id)
+        # Create person in group and link
+        pid = db.add_person(person_name, new_gid)
+        db.link_person_chat(pid, chat_id)
+        db.add_person_to_group(pid, new_gid, chat_id)
+        sessions.pop(chat_id, None)
+        g = db.get_group(new_gid)
+        invite = g["invite_code"] if g else "?"
+        await _reply(update, ctx,
+            f"✅ Gruppe *{group_name}* erstellt!\n\n"
+            f"📋 Einladungscode: `{invite}`\n"
+            f"👤 Dein Name: *{person_name}*\n\n"
+            f"Teile den Code, damit andere beitreten koennen.",
+            set_active=False)
+        return
+
+    # ── Group join: code
+    if session.get("stage") == "group_join_code":
+        code = text.strip()
+        if not code:
+            await _reply(update, ctx, "❌ Code darf nicht leer sein.")
+            return
+        # Verify code exists
+        conn = db.get_conn()
+        g = conn.execute("SELECT id, name FROM groups WHERE invite_code=?", (code,)).fetchone()
+        conn.close()
+        if not g:
+            await _reply(update, ctx, "❌ Ungueltiger Einladungscode. Versuche es erneut:")
+            return
+        session.update({
+            "invite_code": code,
+            "join_group_name": g["name"],
+            "stage": "group_join_person_name"
+        })
+        sessions[chat_id] = session
+        await _reply(update, ctx,
+            f"🔗 Gruppe gefunden: *{g['name']}*\n\n"
+            "👤 Wie heisst du in dieser Gruppe? (Dein Anzeigename):")
+        return
+
+    # ── Group join: person name
+    if session.get("stage") == "group_join_person_name":
+        person_name = text.strip()
+        if not person_name:
+            await _reply(update, ctx, "❌ Name darf nicht leer sein.")
+            return
+        code = session.get("invite_code", "")
+        joined_gid = db.join_group(code, chat_id, person_name)
+        sessions.pop(chat_id, None)
+        if joined_gid:
+            gname = session.get("join_group_name", "Gruppe")
+            await _reply(update, ctx,
+                f"✅ Du bist *{gname}* beigetreten!\n"
+                f"👤 Dein Name: *{person_name}*",
+                set_active=False)
+        else:
+            await _reply(update, ctx, "❌ Beitritt fehlgeschlagen.", set_active=False)
+        return
+
+    # ── Person hinzufuegen (standalone)
     if session.get("stage") == "person_add_name":
         name = text.strip()
         if not name:
             await _reply(update, ctx, "❌ Name darf nicht leer sein.")
             return
-        db.add_person(name)
+        if gid is None:
+            gid = await _ensure_group(update, ctx)
+            if gid is None:
+                return
+        db.add_person(name, gid)
         sessions.pop(chat_id, None)
-        await _reply(update, ctx, f"✅ *{name}* hinzugefügt.", set_active=False)
+        await _reply(update, ctx, f"✅ *{name}* hinzugefuegt.", set_active=False)
         return
 
     # ── Manueller Posten: Beschreibung
@@ -1192,14 +1488,14 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if amount <= 0:
                 raise ValueError
         except ValueError:
-            await update.message.reply_text("❌ Bitte gültigen Betrag eingeben (z.B. `25.50`):",
+            await update.message.reply_text("❌ Bitte gueltigen Betrag eingeben (z.B. `25.50`):",
                                             parse_mode="Markdown")
             return
         desc = session.get("posten_desc", "Posten")
-        # Quittung + Item anlegen
         receipt_id = db.save_receipt(
             store=desc, date="", total=amount, currency=CURRENCY,
             note="manuell", file_path="", payer_id=None, my_share=0.0,
+            group_id=gid,
         )
         item_ids = db.save_items(receipt_id, [{"description": desc, "amount": amount, "quantity": 1}])
         session.update({
@@ -1209,7 +1505,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "data": {"currency": CURRENCY, "total": amount},
         })
         sessions[chat_id] = session
-        persons = db.get_persons()
+        persons = db.get_persons(gid)
         kbd = [[InlineKeyboardButton("👤 Ich habe gezahlt", callback_data="payer:me")]]
         for p in persons:
             kbd.append([InlineKeyboardButton(f"💳 {p['name']} hat gezahlt",
@@ -1227,19 +1523,24 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not name:
             await _reply(update, ctx, "❌ Name darf nicht leer sein.")
             return
-        db.add_person(name)
+        if gid is None:
+            gid = await _ensure_group(update, ctx)
+            if gid is None:
+                return
+        db.add_person(name, gid)
         prev_stage = session.get("_pre_add_stage", "")
         session.pop("_pre_add_stage", None)
         session["stage"] = prev_stage
         sessions[chat_id] = session
-        await _reply(update, ctx, f"✅ *{name}* hinzugefügt.")
+        await _reply(update, ctx, f"✅ *{name}* hinzugefuegt.")
         await _rebuild_person_keyboard(ctx, chat_id, session, prev_stage)
         return
 
     if session.get("stage") == "geld_amount":
         try:
             amount = float(raw)
-            if amount <= 0: raise ValueError
+            if amount <= 0:
+                raise ValueError
         except ValueError:
             await update.message.reply_text("❌ Bitte Zahl eingeben (z.B. `45.50`):",
                                             parse_mode="Markdown")
@@ -1293,6 +1594,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("posten",     cmd_posten))
     app.add_handler(CommandHandler("loeschen",   cmd_loeschen))
     app.add_handler(CommandHandler("abbrechen",  cmd_abbrechen))
+    app.add_handler(CommandHandler("gruppe",     cmd_gruppe))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
@@ -1301,7 +1603,8 @@ def build_application() -> Application:
 
 async def set_commands(app: Application):
     await app.bot.set_my_commands([
-        BotCommand("start",      "Hilfe & Übersicht"),
+        BotCommand("start",      "Hilfe & Uebersicht"),
+        BotCommand("gruppe",     "📂 Gruppen verwalten"),
         BotCommand("geld",       "💸 Zahlung buchen"),
         BotCommand("posten",     "➕ Manueller Posten"),
         BotCommand("saldo",      "Aktuelle Salden"),
@@ -1309,8 +1612,8 @@ async def set_commands(app: Application):
         BotCommand("verlauf",    "Letzte Zahlungen"),
         BotCommand("quittungen", "Letzte Quittungen"),
         BotCommand("personen",   "Alle Personen & Salden"),
-        BotCommand("person_add", "Person hinzufügen"),
+        BotCommand("person_add", "Person hinzufuegen"),
         BotCommand("person_del", "Person entfernen"),
-        BotCommand("loeschen",   "Letzten Eintrag rückgängig"),
+        BotCommand("loeschen",   "Letzten Eintrag rueckgaengig"),
         BotCommand("abbrechen",  "Eingabe abbrechen"),
     ])
