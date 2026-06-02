@@ -709,6 +709,10 @@ def _assign_start_kbd(payer_is_me: bool, group_id: int | None = None,
         label = f"Alles -> {p['name']}" if payer_is_me else f"Alles konsumiert: {p['name']}"
         rows.append([InlineKeyboardButton(label, callback_data=f"assign_one:{p['id']}")])
     rows.append([InlineKeyboardButton("➕ Person hinzufügen", callback_data="inline_add_person")])
+    # Projekte (global, optional) — alles dem Projekt zuweisen
+    for pj in db.get_projects(include_archived=False):
+        label = f"📁 Alles -> Projekt: {pj['name']}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"assign_project:{pj['id']}")])
     rows.append([InlineKeyboardButton("🔀 Manuell (Position fuer Position)",
                                       callback_data="assign_manual")])
     rows.append([InlineKeyboardButton("❌ Abbrechen", callback_data="cancel")])
@@ -726,6 +730,88 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gid     = _active_group(chat_id)
 
     if data == "noop":
+        return
+
+    # ── Projekt: Liste / Detail / Add / Archive / Delete
+    if data == "project_list":
+        all_projects = db.get_projects(include_archived=True)
+        active = [p for p in all_projects if not p["archived"]]
+        archived = [p for p in all_projects if p["archived"]]
+        lines = ["📁 *Projekte*\n", f"*Aktiv* ({len(active)})"]
+        if not active:
+            lines.append("_keine_")
+        else:
+            for pj in active:
+                total = db.get_project_total(pj["id"])
+                lines.append(f"• *{pj['name']}* — {total:.2f}")
+        lines.append("")
+        if archived:
+            lines.append(f"*Archiviert* ({len(archived)})")
+            for pj in archived:
+                lines.append(f"• {pj['name']}")
+        rows = []
+        for pj in active[:8]:
+            rows.append([
+                InlineKeyboardButton(f"📋 {pj['name']}", callback_data=f"project_detail:{pj['id']}"),
+                InlineKeyboardButton("📦", callback_data=f"project_archive:{pj['id']}"),
+                InlineKeyboardButton("🗑", callback_data=f"project_delete:{pj['id']}"),
+            ])
+        rows.append([InlineKeyboardButton("➕ Neues Projekt", callback_data="project_add")])
+        rows.append([InlineKeyboardButton("🔄 Aktualisieren", callback_data="project_list")])
+        await query.edit_message_text(
+            "\n".join(lines), parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    if data == "project_add":
+        session["stage"] = "project_add_name"
+        sessions[chat_id] = session
+        await query.edit_message_text(
+            "📁 Wie soll das neue Projekt heissen?",
+            parse_mode="Markdown")
+        return
+
+    if data.startswith("project_archive:"):
+        pj_id = int(data.split(":")[1])
+        db.archive_project(pj_id)
+        await query.answer("Archiviert")
+        # Re-render
+        query.data = "project_list"
+        await handle_callback(update, ctx)
+        return
+
+    if data.startswith("project_delete:"):
+        pj_id = int(data.split(":")[1])
+        db.delete_project(pj_id)
+        await query.answer("Gelöscht")
+        query.data = "project_list"
+        await handle_callback(update, ctx)
+        return
+
+    if data.startswith("project_detail:"):
+        pj_id = int(data.split(":")[1])
+        pj = db.get_project(pj_id)
+        items = db.get_project_items(pj_id)
+        total = db.get_project_total(pj_id)
+        lines = [f"📁 *Projekt: {pj['name']}*", f"Total: *{total:.2f}*\n"]
+        if not items:
+            lines.append("_Keine Posten zugewiesen._")
+        else:
+            for it in items[:20]:
+                lines.append(
+                    f"• *{it['description']}* — {it['share_amount']:.2f} "
+                    f"_({it['store'] or '?'}, {it['date'] or '?'})_"
+                )
+            if len(items) > 20:
+                lines.append(f"\n_… und {len(items)-20} weitere_")
+        rows = [
+            [InlineKeyboardButton("📦 Archivieren", callback_data=f"project_archive:{pj_id}"),
+             InlineKeyboardButton("🗑 Löschen", callback_data=f"project_delete:{pj_id}")],
+            [InlineKeyboardButton("« Zurück", callback_data="project_list")],
+        ]
+        await query.edit_message_text(
+            "\n".join(lines), parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(rows))
         return
 
     # ── Admin: User per Inline-Button sperren
@@ -1115,6 +1201,22 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for item in items:
             db.assign_item(item["id"], pid, item["amount"])
         await _finish_assignment(query, ctx, chat_id, session, items)
+        return
+
+    # ── ZUWEISUNG: ein Projekt (global, alle Items dorthin)
+    if data.startswith("assign_project:"):
+        pj_id = int(data.split(":")[1])
+        items = session.get("items", [])
+        for item in items:
+            db.assign_item_to_project(item["id"], pj_id, item["amount"])
+        # plus dem Bezahler (falls "me") als virtuelle Person aufgeführt? Optional.
+        # Hier: nur Projekt-Zuweisung, kein Person-Saldo dadurch.
+        pj = db.get_project(pj_id)
+        await query.edit_message_text(
+            f"✅ Alle Posten zugewiesen an Projekt: *{pj['name']}*",
+            parse_mode="Markdown"
+        )
+        sessions.pop(chat_id, None)
         return
 
     # ── ZUWEISUNG: Personen-Picker (alle Items gleichzeitig)
@@ -1510,6 +1612,21 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     raw     = text.replace(",", ".")
     gid     = _active_group(chat_id)
 
+    # ── Projekt anlegen: name
+    if session.get("stage") == "project_add_name":
+        name = text.strip()
+        if not name:
+            await _reply(update, ctx, "❌ Name darf nicht leer sein.")
+            return
+        if db.get_project_by_name(name):
+            await _reply(update, ctx, "❌ Projekt mit diesem Namen existiert bereits.")
+            return
+        db.add_project(name, chat_id)
+        sessions.pop(chat_id, None)
+        await _reply(update, ctx,
+            f"✅ Projekt *{name}* angelegt. Nutze /projekte zum Anzeigen.")
+        return
+
     # ── Group creation: name
     if session.get("stage") == "group_create_name":
         name = text.strip()
@@ -1780,6 +1897,46 @@ async def cmd_revoke(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pass
 
 
+
+async def cmd_projekte(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Projekt-Verwaltung — alle User können listen, jeder kann anlegen/archivieren."""
+    if not _auth(update): return
+    chat_id = update.effective_chat.id
+    all_projects = db.get_projects(include_archived=True)
+    active = [p for p in all_projects if not p["archived"]]
+    archived = [p for p in all_projects if p["archived"]]
+
+    lines = ["📁 *Projekte*\n"]
+    lines.append(f"*Aktiv* ({len(active)})")
+    if not active:
+        lines.append("_keine_")
+    else:
+        for pj in active:
+            total = db.get_project_total(pj["id"])
+            lines.append(f"• *{pj['name']}* — {total:.2f}")
+    lines.append("")
+    if archived:
+        lines.append(f"*Archiviert* ({len(archived)})")
+        for pj in archived:
+            lines.append(f"• {pj['name']}")
+        lines.append("")
+
+    rows = []
+    for pj in active[:8]:
+        rows.append([
+            InlineKeyboardButton(f"📋 {pj['name']}", callback_data=f"project_detail:{pj['id']}"),
+            InlineKeyboardButton("📦 Archivieren", callback_data=f"project_archive:{pj['id']}"),
+            InlineKeyboardButton("🗑", callback_data=f"project_delete:{pj['id']}"),
+        ])
+    rows.append([InlineKeyboardButton("➕ Neues Projekt", callback_data="project_add")])
+    rows.append([InlineKeyboardButton("🔄 Aktualisieren", callback_data="project_list")])
+
+    await update.message.reply_text(
+        "\n".join(lines), parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+
 # ── Application ───────────────────────────────────────────────────────────────
 
 async def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1811,6 +1968,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("loeschen",   cmd_loeschen))
     app.add_handler(CommandHandler("abbrechen",  cmd_abbrechen))
     app.add_handler(CommandHandler("gruppe",     cmd_gruppe))
+    app.add_handler(CommandHandler("projekte",   cmd_projekte))
     app.add_handler(CommandHandler("users",      cmd_users))
     app.add_handler(CommandHandler("revoke",     cmd_revoke))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_file))
@@ -1833,6 +1991,7 @@ async def set_commands(app: Application):
         BotCommand("person_add", "Person hinzufuegen"),
         BotCommand("person_del", "Person entfernen"),
         BotCommand("loeschen",   "Letzten Eintrag rueckgaengig"),
+        BotCommand("projekte",   "📁 Projekte verwalten"),
         BotCommand("abbrechen",  "Eingabe abbrechen"),
         BotCommand("users",      "👥 User-Verwaltung (Admin)"),
         BotCommand("revoke",     "🚫 User sperren (Admin)"),

@@ -76,6 +76,24 @@ def init_db() -> None:
             FOREIGN KEY (person_id) REFERENCES persons(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS projects (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL UNIQUE,
+            archived    INTEGER NOT NULL DEFAULT 0,
+            created_by  INTEGER,
+            created_at  TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS item_project_assignments (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id      INTEGER NOT NULL,
+            project_id   INTEGER NOT NULL,
+            share_amount REAL NOT NULL,
+            UNIQUE(item_id, project_id),
+            FOREIGN KEY (item_id)    REFERENCES items(id)    ON DELETE CASCADE,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS allowed_chats (
             chat_id     INTEGER PRIMARY KEY,
             name        TEXT,
@@ -838,6 +856,102 @@ def remove_allowed_chat(chat_id: int) -> None:
     conn.execute("DELETE FROM allowed_chats WHERE chat_id=?", (chat_id,))
     conn.commit()
     conn.close()
+
+
+
+# ── Projects (global, group-overarching) ─────────────────────────────────────
+
+def add_project(name: str, created_by: int) -> int:
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO projects (name, created_by) VALUES (?,?)",
+        (name.strip(), created_by))
+    pid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return pid
+
+
+def get_projects(include_archived: bool = False) -> list[dict]:
+    conn = get_conn()
+    if include_archived:
+        rows = conn.execute("SELECT * FROM projects ORDER BY archived, name").fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM projects WHERE archived=0 ORDER BY name").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_project(project_id: int) -> Optional[dict]:
+    conn = get_conn()
+    r = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+    conn.close()
+    return dict(r) if r else None
+
+
+def get_project_by_name(name: str) -> Optional[dict]:
+    conn = get_conn()
+    r = conn.execute("SELECT * FROM projects WHERE name=?", (name,)).fetchone()
+    conn.close()
+    return dict(r) if r else None
+
+
+def archive_project(project_id: int) -> None:
+    conn = get_conn()
+    conn.execute("UPDATE projects SET archived=1 WHERE id=?", (project_id,))
+    conn.commit()
+    conn.close()
+
+
+def unarchive_project(project_id: int) -> None:
+    conn = get_conn()
+    conn.execute("UPDATE projects SET archived=0 WHERE id=?", (project_id,))
+    conn.commit()
+    conn.close()
+
+
+def delete_project(project_id: int) -> None:
+    conn = get_conn()
+    conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
+    conn.commit()
+    conn.close()
+
+
+def assign_item_to_project(item_id: int, project_id: int, share_amount: float) -> None:
+    """Weist ein Item einem Projekt zu (zusätzlich oder anstatt einer Person)."""
+    conn = get_conn()
+    conn.execute("DELETE FROM item_project_assignments WHERE item_id=?", (item_id,))
+    conn.execute(
+        "INSERT INTO item_project_assignments (item_id, project_id, share_amount) VALUES (?,?,?)",
+        (item_id, project_id, share_amount))
+    conn.commit()
+    conn.close()
+
+
+def get_project_total(project_id: int) -> float:
+    conn = get_conn()
+    r = conn.execute(
+        "SELECT COALESCE(SUM(share_amount), 0) AS total "
+        "FROM item_project_assignments WHERE project_id=?",
+        (project_id,)).fetchone()
+    conn.close()
+    return float(r["total"])
+
+
+def get_project_items(project_id: int, limit: int = 100) -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT i.description, i.quantity, ipa.share_amount, r.store, r.date,
+                  r.currency, g.name AS group_name
+             FROM item_project_assignments ipa
+             JOIN items i      ON i.id = ipa.item_id
+             JOIN receipts r   ON r.id = i.receipt_id
+             LEFT JOIN groups g ON g.id = r.group_id
+            WHERE ipa.project_id=?
+          ORDER BY r.date DESC, i.id DESC
+            LIMIT ?""", (project_id, limit)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def ensure_user_has_group(chat_id: int, default_name: Optional[str] = None) -> Optional[int]:
