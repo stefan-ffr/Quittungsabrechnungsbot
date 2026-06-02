@@ -121,7 +121,7 @@ async def _send(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int,
                 inline: InlineKeyboardMarkup | None = None):
     if set_active is not None:
         ctx.chat_data["kbd_active"] = set_active
-    kbd = _kbd(ctx, update.effective_chat.id if update and update.effective_chat else None)
+    kbd = _kbd(ctx, chat_id)
 
     if inline:
         await ctx.bot.send_message(chat_id, text, reply_markup=kbd, parse_mode="Markdown")
