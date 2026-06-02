@@ -812,6 +812,17 @@ def get_allowed_chats() -> list[int]:
     return [r["chat_id"] for r in rows]
 
 
+def get_allowed_chats_full() -> list[dict]:
+    """Returns all approved chats with name + approved_by + created_at."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT chat_id, name, approved_by, created_at "
+        "FROM allowed_chats ORDER BY created_at"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def add_allowed_chat(chat_id: int, name: str, approved_by: int) -> None:
     conn = get_conn()
     conn.execute(

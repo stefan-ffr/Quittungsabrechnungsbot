@@ -717,6 +717,70 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "noop":
         return
 
+    # ── Admin: User per Inline-Button sperren
+    if data.startswith("user_revoke:"):
+        if not _is_admin(chat_id):
+            await query.answer("Nur Admins.", show_alert=True)
+            return
+        target = int(data.split(":")[1])
+        if target in ALLOWED_CHAT_IDS:
+            await query.answer("Admin kann nicht via Bot gesperrt werden.", show_alert=True)
+            return
+        db.remove_allowed_chat(target)
+        _pending_requests.discard(target)
+        await query.edit_message_text(
+            f"🚫 User `{target}` gesperrt.", parse_mode="Markdown"
+        )
+        try:
+            await ctx.bot.send_message(target, "🚫 Dein Zugriff wurde widerrufen.")
+        except Exception:
+            pass
+        return
+
+    # ── Admin: Refresh /users View
+    if data == "show_users":
+        if not _is_admin(chat_id):
+            await query.answer("Nur Admins.", show_alert=True)
+            return
+        admins = list(ALLOWED_CHAT_IDS)
+        approved = db.get_allowed_chats_full()
+        pending = sorted(_pending_requests)
+        lines = ["👥 *User-Verwaltung*\n"]
+        lines.append(f"*👑 Admins* ({len(admins)})")
+        for aid in admins:
+            lines.append(f"• `{aid}`")
+        lines.append("")
+        lines.append(f"*✅ Approved* ({len(approved)})")
+        if approved:
+            for u in approved:
+                lines.append(f"• *{u.get('name') or '?'}* — `{u['chat_id']}`")
+        else:
+            lines.append("_keine_")
+        lines.append("")
+        lines.append(f"*⏳ Pending* ({len(pending)})")
+        if pending:
+            for pid in pending:
+                lines.append(f"• `{pid}`")
+        else:
+            lines.append("_keine_")
+        rows = []
+        for pid in pending[:5]:
+            rows.append([
+                InlineKeyboardButton(f"✅ Erlauben {pid}", callback_data=f"access_grant:{pid}:#{pid}"),
+                InlineKeyboardButton(f"❌ Ablehnen {pid}", callback_data=f"access_deny:{pid}"),
+            ])
+        for u in approved[:8]:
+            name = (u.get("name") or str(u["chat_id"]))[:18]
+            rows.append([InlineKeyboardButton(
+                f"🚫 Sperren: {name}", callback_data=f"user_revoke:{u['chat_id']}"
+            )])
+        rows.append([InlineKeyboardButton("🔄 Aktualisieren", callback_data="show_users")])
+        await query.edit_message_text(
+            "\n".join(lines), parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(rows) if rows else None
+        )
+        return
+
     # ── Zugriffsanfrage: Erlauben
     if data.startswith("access_grant:"):
         parts = data.split(":", 2)
@@ -1619,6 +1683,92 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Schick mir eine Quittung (Foto/PDF) oder nutze die Buttons unten.")
 
 
+
+# ── Admin: User-Verwaltung ────────────────────────────────────────────────────
+
+async def cmd_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Liste aller User (Admins + approved). Nur für Admins."""
+    chat_id = update.effective_chat.id
+    if not _is_admin(chat_id):
+        await update.message.reply_text("🚫 Nur Admins.")
+        return
+
+    admins = list(ALLOWED_CHAT_IDS)
+    approved = db.get_allowed_chats_full()
+    pending = sorted(_pending_requests)
+
+    lines = ["👥 *User-Verwaltung*\n"]
+    lines.append(f"*👑 Admins* ({len(admins)})")
+    for aid in admins:
+        lines.append(f"• `{aid}`")
+    lines.append("")
+
+    lines.append(f"*✅ Approved* ({len(approved)})")
+    if not approved:
+        lines.append("_keine_")
+    else:
+        for u in approved:
+            name = u.get("name") or "?"
+            lines.append(f"• *{name}* — `{u['chat_id']}`")
+    lines.append("")
+
+    lines.append(f"*⏳ Pending* ({len(pending)})")
+    if not pending:
+        lines.append("_keine_")
+    else:
+        for pid in pending:
+            lines.append(f"• `{pid}`")
+
+    rows = []
+    # pending: approve + deny per Tap
+    for pid in pending[:5]:
+        rows.append([
+            InlineKeyboardButton(f"✅ Erlauben {pid}", callback_data=f"access_grant:{pid}:#{pid}"),
+            InlineKeyboardButton(f"❌ Ablehnen {pid}", callback_data=f"access_deny:{pid}"),
+        ])
+    # approved: revoke per Tap
+    for u in approved[:8]:
+        name = (u.get("name") or str(u["chat_id"]))[:18]
+        rows.append([InlineKeyboardButton(
+            f"🚫 Sperren: {name}",
+            callback_data=f"user_revoke:{u['chat_id']}"
+        )])
+    rows.append([InlineKeyboardButton("🔄 Aktualisieren", callback_data="show_users")])
+
+    await update.message.reply_text(
+        "\n".join(lines), parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows) if rows else None
+    )
+
+
+async def cmd_revoke(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/revoke <chat_id> — User aus allowed_chats entfernen. Nur für Admins."""
+    chat_id = update.effective_chat.id
+    if not _is_admin(chat_id):
+        await update.message.reply_text("🚫 Nur Admins.")
+        return
+    if not ctx.args:
+        await update.message.reply_text("Nutzung: `/revoke <chat_id>`", parse_mode="Markdown")
+        return
+    try:
+        target = int(ctx.args[0])
+    except ValueError:
+        await update.message.reply_text("Ungültige Chat-ID.")
+        return
+    if target in ALLOWED_CHAT_IDS:
+        await update.message.reply_text(
+            "⚠️ User ist Admin (in ALLOWED_CHAT_IDS) — manuell aus .env entfernen + Bot neu starten."
+        )
+        return
+    db.remove_allowed_chat(target)
+    _pending_requests.discard(target)
+    await update.message.reply_text(f"🚫 User `{target}` gesperrt.", parse_mode="Markdown")
+    try:
+        await ctx.bot.send_message(target, "🚫 Dein Zugriff wurde widerrufen.")
+    except Exception:
+        pass
+
+
 # ── Application ───────────────────────────────────────────────────────────────
 
 async def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1650,6 +1800,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("loeschen",   cmd_loeschen))
     app.add_handler(CommandHandler("abbrechen",  cmd_abbrechen))
     app.add_handler(CommandHandler("gruppe",     cmd_gruppe))
+    app.add_handler(CommandHandler("users",      cmd_users))
+    app.add_handler(CommandHandler("revoke",     cmd_revoke))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
@@ -1671,4 +1823,6 @@ async def set_commands(app: Application):
         BotCommand("person_del", "Person entfernen"),
         BotCommand("loeschen",   "Letzten Eintrag rueckgaengig"),
         BotCommand("abbrechen",  "Eingabe abbrechen"),
+        BotCommand("users",      "👥 User-Verwaltung (Admin)"),
+        BotCommand("revoke",     "🚫 User sperren (Admin)"),
     ])
