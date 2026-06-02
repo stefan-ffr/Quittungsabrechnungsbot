@@ -391,12 +391,18 @@ async def cmd_personen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         b = balances.get(p["id"])
         lines.append(_fmt_balance(b) if b else f"• *{p['name']}*")
     rows = []
+    my_chat = update.effective_chat.id
     for p in persons:
-        rows.append([
-            InlineKeyboardButton(f"📋 {p['name']}", callback_data=f"detail:{p['id']}"),
-            InlineKeyboardButton("🔗", callback_data=f"person_link:{p['id']}"),
-            InlineKeyboardButton("🗑️", callback_data=f"person_del:{p['id']}"),
-        ])
+        row = [InlineKeyboardButton(f"📋 {p['name']}", callback_data=f"detail:{p['id']}")]
+        # Status der Verknüpfung
+        if p["chat_id"] == my_chat:
+            row.append(InlineKeyboardButton("✓ Du", callback_data="noop"))
+        elif p["chat_id"] is None:
+            row.append(InlineKeyboardButton("👤 Das bin ich", callback_data=f"claim_person:{p['id']}"))
+        # Einladung (für andere) + Löschen
+        row.append(InlineKeyboardButton("🔗", callback_data=f"person_link:{p['id']}"))
+        row.append(InlineKeyboardButton("🗑️", callback_data=f"person_del:{p['id']}"))
+        rows.append(row)
     rows.append([InlineKeyboardButton("➕ Person hinzufügen", callback_data="person_add_start")])
     await _reply(update, ctx, "\n".join(lines),
                  inline=InlineKeyboardMarkup(rows), set_active=False)
@@ -1064,6 +1070,32 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # ── Person loeschen
     # ── Person verknüpfen: Einladungslink generieren
+    # ── Self-Link: "Das bin ich"
+    if data.startswith("claim_person:"):
+        pid = int(data.split(":")[1])
+        p = db.get_person(pid)
+        if not p:
+            await query.edit_message_text("❌ Person nicht gefunden.")
+            return
+        if p["chat_id"] is not None and p["chat_id"] != chat_id:
+            await query.answer("Person ist bereits jemandem anderem zugeordnet.", show_alert=True)
+            return
+        # Link
+        conn = db.get_conn()
+        conn.execute("UPDATE persons SET chat_id=? WHERE id=?", (chat_id, pid))
+        conn.execute(
+            "UPDATE group_members SET person_id=? WHERE chat_id=? AND group_id=?",
+            (pid, chat_id, p["group_id"])
+        )
+        conn.commit()
+        conn.close()
+        await query.edit_message_text(
+            f"✅ Du bist jetzt verlinkt mit *{p['name']}* in dieser Gruppe.\n"
+            f"Tap /personen um es zu sehen.",
+            parse_mode="Markdown"
+        )
+        return
+
     if data.startswith("person_link:"):
         pid = int(data.split(":")[1])
         p = db.get_person(pid)
