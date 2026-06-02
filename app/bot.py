@@ -566,7 +566,8 @@ async def cmd_quittungen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for r in receipts:
         date  = (r["date"] or str(r["uploaded_at"])[:10])
         store = r["store"] or "Unbekannt"
-        total = f"{CURRENCY} {r['total']:.2f}" if r["total"] else "?"
+        _cur = r['currency'] or CURRENCY
+        total = f"{_cur} {r['total']:.2f}" if r["total"] else "?"
         payer = f"gezahlt von *{r['payer_name']}*" if r["payer_name"] else "von *mir* gezahlt"
         lines.append(f"• *{store}* – {date} – {total} · {payer}")
     rows = [[InlineKeyboardButton(
@@ -701,7 +702,7 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg.delete()
         await _send(ctx, chat_id,
             f"⚠️ Keine Positionen erkannt.\n"
-            f"#{receipt_id} – {data.get('store','?')} – {CURRENCY} {data.get('total',0):.2f}",
+            f"#{receipt_id} – {data.get('store','?')} – {data.get('currency',CURRENCY)} {data.get('total',0):.2f}",
             set_active=False)
         return
 
@@ -1110,14 +1111,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         payer = f"*{r['payer_name']}*" if r["payer_name"] else "*mir*"
         lines = [
             f"🧾 *{store}* – {date}",
-            f"💰 Total: {CURRENCY} {r['total']:.2f}",
+            f"💰 Total: {r['currency'] or CURRENCY} {r['total']:.2f}",
             f"💳 Gezahlt von: {payer}\n",
             "*Positionen:*",
         ]
         for it in items:
             assigned = it["person_names"] or "—"
             qty = f"x{int(it['quantity'])} " if it["quantity"] and it["quantity"] != 1 else ""
-            lines.append(f"  • {it['description']} {qty}-> {CURRENCY} {it['amount']:.2f}")
+            lines.append(f"  • {it['description']} {qty}-> {r['currency'] or CURRENCY} {it['amount']:.2f}")
             lines.append(f"    ↳ {assigned}")
         kbd = [
             [InlineKeyboardButton("💳 Zahler aendern", callback_data=f"edit_payer:{rid}")],
