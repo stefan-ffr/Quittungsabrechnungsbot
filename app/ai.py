@@ -33,6 +33,14 @@ Wichtig:
 - "amount" ist der Gesamtpreis des Artikels (qty × Einzelpreis)
 - Wenn Trinkgeld/Service vorhanden: als eigenen Item aufführen
 - Währung erkennen anhand des Symbols oder des Landes
+- **Sprache: Alle Texte (store, description) ins Deutsche übersetzen,
+  egal in welcher Sprache die Quittung ist (Thai, Englisch, Französisch,
+  Spanisch, etc.). Eigennamen (Marken, Geschäftsnamen die echte Markennamen
+  sind) bleiben in der Originalsprache; nur die generischen Beschreibungen
+  und Produktbezeichnungen werden übersetzt.**
+- Beispiel: "ข้าวผัดกุ้ง" → "Garnelen-Fried-Rice", "Bottled Water" → "Wasser-Flasche".
+- Wenn Quittung lateinische Schrift hat aber fremdsprachig (z.B. Französisch
+  "Tarte aux pommes"): trotzdem übersetzen → "Apfeltarte".
 """
 
 USER_PROMPT = "Extrahiere alle Positionen aus dieser Quittung."
