@@ -22,6 +22,7 @@ from telegram.ext import (
 from app.config import TELEGRAM_TOKEN, ALLOWED_CHAT_IDS, UPLOAD_PATH
 import app.db as db
 import app.ai as ai
+import app.moneymanager as mm
 
 log = logging.getLogger(__name__)
 CURRENCY = "CHF"
@@ -590,6 +591,34 @@ async def cmd_quittungen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     rows.append([InlineKeyboardButton("🗑️ Letzte Quittung loeschen", callback_data="del:last_receipt")])
     await _reply(update, ctx, "\n".join(lines),
                  inline=InlineKeyboardMarkup(rows), set_active=False)
+
+
+@_log_action("cmd_sync_money")
+async def cmd_sync_money(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Push the active group's receipt/settlement transactions to Money Manager."""
+    if not _auth(update): return
+    if not mm.enabled():
+        await _reply(update, ctx,
+            "ℹ️ *Money Manager* ist nicht konfiguriert.\n"
+            "Setze `MONEY_MANAGER_URL` und `MONEY_MANAGER_API_KEY` in der `.env`.",
+            set_active=False)
+        return
+    gid = await _ensure_group(update, ctx)
+    if gid is None: return
+
+    await _reply(update, ctx, "⏳ Sende an Money Manager …", set_active=False)
+    try:
+        result = await mm.sync_group(gid)
+    except Exception as e:
+        log.exception("Money Manager sync failed")
+        await _reply(update, ctx, f"❌ Sync fehlgeschlagen: {e}", set_active=False)
+        return
+
+    await _reply(update, ctx,
+        f"✅ *Money Manager synchronisiert*\n"
+        f"Neu gebucht: {result.get('created', 0)} · "
+        f"Übersprungen: {result.get('skipped', 0)}",
+        set_active=False)
 
 
 @_log_action("cmd_geld")
@@ -2094,6 +2123,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("detail",     cmd_detail))
     app.add_handler(CommandHandler("verlauf",    cmd_verlauf))
     app.add_handler(CommandHandler("quittungen", cmd_quittungen))
+    app.add_handler(CommandHandler("sync_money", cmd_sync_money))
     app.add_handler(CommandHandler("geld",       cmd_geld))
     app.add_handler(CommandHandler("posten",     cmd_posten))
     app.add_handler(CommandHandler("loeschen",   cmd_loeschen))
@@ -2118,6 +2148,7 @@ async def set_commands(app: Application):
         BotCommand("detail",     "Kontoauszug einer Person"),
         BotCommand("verlauf",    "Letzte Zahlungen"),
         BotCommand("quittungen", "Letzte Quittungen"),
+        BotCommand("sync_money", "💼 An Money Manager senden"),
         BotCommand("personen",   "Alle Personen & Salden"),
         BotCommand("person_add", "Person hinzufuegen"),
         BotCommand("person_del", "Person entfernen"),

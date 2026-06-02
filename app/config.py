@@ -15,3 +15,12 @@ ALLOWED_CHAT_IDS: list[int] = [int(x.strip()) for x in _raw_ids.split(",") if x.
 
 DATABASE_PATH: str = os.getenv("DATABASE_PATH", "/data/receipts.db")
 UPLOAD_PATH: str = os.getenv("UPLOAD_PATH", "/data/uploads")
+
+# Default currency for cash transfers (receipts carry their own currency).
+CURRENCY: str = os.getenv("CURRENCY", "CHF")
+
+# Optional Money Manager integration (https://github.com/stefan-ffr/money-manager).
+# When both are set, /sync_money pushes the user's receipt/settlement transactions
+# into a dedicated "Quittungsabrechnung" account there. Leave empty to disable.
+MONEY_MANAGER_URL: str = os.getenv("MONEY_MANAGER_URL", "")
+MONEY_MANAGER_API_KEY: str = os.getenv("MONEY_MANAGER_API_KEY", "")
