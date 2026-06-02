@@ -191,7 +191,7 @@ async def _ensure_group(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int |
         return gid
 
     # Auto-migration for existing users
-    migrated = db.ensure_user_has_group(chat_id)
+    migrated = db.ensure_user_has_group(chat_id, default_name=(update.effective_user.first_name if update and update.effective_user else None))
     if migrated:
         return migrated
 
@@ -212,7 +212,7 @@ async def _ensure_group_cb(query, ctx: ContextTypes.DEFAULT_TYPE, chat_id: int) 
     gid = _active_group(chat_id)
     if gid is not None:
         return gid
-    migrated = db.ensure_user_has_group(chat_id)
+    migrated = db.ensure_user_has_group(chat_id, default_name=(update.effective_user.first_name if update and update.effective_user else None))
     if migrated:
         return migrated
     await query.edit_message_text(
@@ -262,7 +262,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gid = _active_group(chat_id)
     if gid is None:
         # Auto-migration
-        migrated = db.ensure_user_has_group(chat_id)
+        migrated = db.ensure_user_has_group(chat_id, default_name=(update.effective_user.first_name if update and update.effective_user else None))
         if migrated:
             gid = migrated
         else:
@@ -579,7 +579,7 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     gid = _active_group(chat_id)
     if gid is None:
-        migrated = db.ensure_user_has_group(chat_id)
+        migrated = db.ensure_user_has_group(chat_id, default_name=(update.effective_user.first_name if update and update.effective_user else None))
         if migrated:
             gid = migrated
         else:

@@ -840,11 +840,12 @@ def remove_allowed_chat(chat_id: int) -> None:
     conn.close()
 
 
-def ensure_user_has_group(chat_id: int) -> Optional[int]:
+def ensure_user_has_group(chat_id: int, default_name: Optional[str] = None) -> Optional[int]:
     """
     Ensure existing users (from ALLOWED_CHAT_IDS) have at least one group.
     If they have a person entry but no group membership, auto-create 'Standard'
-    group and migrate them. Returns group_id or None if no migration needed.
+    group and migrate them. If default_name given and no person exists yet,
+    a person with that name is created + linked. Returns group_id or None.
     """
     conn = get_conn()
     # Check if user already has groups
@@ -889,10 +890,16 @@ def ensure_user_has_group(chat_id: int) -> Optional[int]:
             "VALUES (?,?,?,?)",
             (gid, chat_id, person["id"], "admin"))
     else:
+        # Auto-create person with default_name (Telegram first_name) and link
+        person_name = (default_name or "Ich").strip()
+        cur2 = conn.execute(
+            "INSERT INTO persons (name, chat_id, group_id) VALUES (?,?,?)",
+            (person_name, chat_id, gid))
+        new_pid = cur2.lastrowid
         conn.execute(
-            "INSERT OR IGNORE INTO group_members (group_id, chat_id, role) "
-            "VALUES (?,?,?)",
-            (gid, chat_id, "admin"))
+            "INSERT OR IGNORE INTO group_members (group_id, chat_id, person_id, role) "
+            "VALUES (?,?,?,?)",
+            (gid, chat_id, new_pid, "admin"))
 
     conn.execute(
         "INSERT OR REPLACE INTO active_groups (chat_id, group_id) VALUES (?,?)",
