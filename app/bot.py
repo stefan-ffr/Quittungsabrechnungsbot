@@ -178,6 +178,31 @@ def _fmt_balance(b: dict) -> str:
         return f"🟢 *{b['name']}* – ich schulde {CURRENCY} {abs(bal):.2f}"
 
 
+
+def _log_action(name: str):
+    """Decorator: loggt Handler-Aufrufe mit chat_id + relevantem Kontext."""
+    import functools
+    def deco(fn):
+        @functools.wraps(fn)
+        async def wrap(update, ctx, *a, **k):
+            try:
+                cid = update.effective_chat.id if update and update.effective_chat else "?"
+                uid = update.effective_user.id if update and update.effective_user else "?"
+                msg_txt = ""
+                if update and update.message and update.message.text:
+                    msg_txt = update.message.text[:80]
+                cb_data = ""
+                if update and update.callback_query:
+                    cb_data = update.callback_query.data
+                log.info("HANDLER %s chat=%s user=%s text=%r cb=%r",
+                         name, cid, uid, msg_txt, cb_data)
+            except Exception as e:
+                log.warning("log_action failed: %s", e)
+            return await fn(update, ctx, *a, **k)
+        return wrap
+    return deco
+
+
 # ── Reply-Keyboard Trigger-Texte ──────────────────────────────────────────────
 
 REPLY_TRIGGERS = {
@@ -242,6 +267,7 @@ async def _ensure_group_cb(query, ctx: ContextTypes.DEFAULT_TYPE, chat_id: int) 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
+@_log_action("cmd_start")
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
@@ -308,6 +334,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@_log_action("cmd_gruppe")
 async def cmd_gruppe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
     chat_id = update.effective_chat.id
@@ -344,6 +371,7 @@ async def cmd_gruppe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                  inline=InlineKeyboardMarkup(rows), set_active=False)
 
 
+@_log_action("cmd_personen")
 async def cmd_personen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
     gid = await _ensure_group(update, ctx)
@@ -374,6 +402,7 @@ async def cmd_personen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                  inline=InlineKeyboardMarkup(rows), set_active=False)
 
 
+@_log_action("cmd_person_add")
 async def cmd_person_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
     gid = await _ensure_group(update, ctx)
@@ -387,6 +416,7 @@ async def cmd_person_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _reply(update, ctx, f"✅ *{name}* hinzugefuegt.", set_active=False)
 
 
+@_log_action("cmd_person_del")
 async def cmd_person_del(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
     gid = await _ensure_group(update, ctx)
@@ -411,6 +441,7 @@ async def cmd_person_del(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _reply(update, ctx, f"🗑️ *{match['name']}* entfernt.", set_active=False)
 
 
+@_log_action("cmd_saldo")
 async def cmd_saldo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
     gid = await _ensure_group(update, ctx)
@@ -443,6 +474,7 @@ async def cmd_saldo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                  set_active=False)
 
 
+@_log_action("cmd_detail")
 async def cmd_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
     gid = await _ensure_group(update, ctx)
@@ -499,6 +531,7 @@ async def _send_detail(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, person_id: 
     await _send(ctx, chat_id, "\n".join(lines), set_active=False)
 
 
+@_log_action("cmd_verlauf")
 async def cmd_verlauf(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
     gid = await _ensure_group(update, ctx)
@@ -519,6 +552,7 @@ async def cmd_verlauf(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                  inline=InlineKeyboardMarkup(rows), set_active=False)
 
 
+@_log_action("cmd_quittungen")
 async def cmd_quittungen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
     gid = await _ensure_group(update, ctx)
@@ -544,6 +578,7 @@ async def cmd_quittungen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                  inline=InlineKeyboardMarkup(rows), set_active=False)
 
 
+@_log_action("cmd_geld")
 async def cmd_geld(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
     gid = await _ensure_group(update, ctx)
@@ -560,6 +595,7 @@ async def cmd_geld(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@_log_action("cmd_loeschen")
 async def cmd_loeschen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
     await _reply(update, ctx, "Was loeschen?",
@@ -572,6 +608,7 @@ async def cmd_loeschen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@_log_action("cmd_posten")
 async def cmd_posten(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
     gid = await _ensure_group(update, ctx)
@@ -582,6 +619,7 @@ async def cmd_posten(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         set_active=True)
 
 
+@_log_action("cmd_abbrechen")
 async def cmd_abbrechen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
     sessions.pop(update.effective_chat.id, None)
@@ -590,6 +628,7 @@ async def cmd_abbrechen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Datei-Handler ─────────────────────────────────────────────────────────────
 
+@_log_action("handle_file")
 async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update):
         await _request_access(update, ctx)
@@ -739,6 +778,7 @@ def _assign_start_kbd(payer_is_me: bool, group_id: int | None = None,
 
 # ── Callback-Handler ──────────────────────────────────────────────────────────
 
+@_log_action("handle_callback")
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query   = update.callback_query
     await query.answer()
@@ -1601,6 +1641,7 @@ async def _request_access(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             log.warning("Could not notify admin %s", admin_id)
 
 
+@_log_action("handle_text")
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update):
         await _request_access(update, ctx)
@@ -1836,6 +1877,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Admin: User-Verwaltung ────────────────────────────────────────────────────
 
+@_log_action("cmd_users")
 async def cmd_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Liste aller User (Admins + approved). Nur für Admins."""
     chat_id = update.effective_chat.id
@@ -1891,6 +1933,7 @@ async def cmd_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@_log_action("cmd_revoke")
 async def cmd_revoke(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """/revoke <chat_id> — User aus allowed_chats entfernen. Nur für Admins."""
     chat_id = update.effective_chat.id
@@ -1920,6 +1963,7 @@ async def cmd_revoke(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 
+@_log_action("cmd_projekte")
 async def cmd_projekte(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Projekt-Verwaltung — alle User können listen, jeder kann anlegen/archivieren."""
     if not _auth(update): return
@@ -1962,13 +2006,29 @@ async def cmd_projekte(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── Application ───────────────────────────────────────────────────────────────
 
 async def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
-    """Globaler Error-Handler – sendet Fehlermeldungen an den User."""
-    log.exception("Unhandled exception:", exc_info=ctx.error)
+    """Globaler Error-Handler – loggt full + sendet Fehlermeldungen an User + Admins."""
+    import traceback
+    tb = "".join(traceback.format_exception(type(ctx.error), ctx.error, ctx.error.__traceback__))
+    chat_id = update.effective_chat.id if hasattr(update, "effective_chat") and update.effective_chat else "?"
+    user_id = update.effective_user.id if hasattr(update, "effective_user") and update.effective_user else "?"
+    log.error("UNHANDLED EXCEPTION chat=%s user=%s\nUpdate=%r\nTraceback:\n%s",
+              chat_id, user_id, update, tb)
     if update and hasattr(update, "effective_chat") and update.effective_chat:
         try:
             await ctx.bot.send_message(
                 update.effective_chat.id,
                 f"❌ Fehler: {ctx.error}",
+            )
+        except Exception:
+            pass
+    # Forward error trace to all admins (truncated)
+    excerpt = tb[-1500:] if len(tb) > 1500 else tb
+    for admin in ALLOWED_CHAT_IDS:
+        try:
+            await ctx.bot.send_message(
+                admin,
+                f"⚠️ *Bot-Fehler* chat=`{chat_id}` user=`{user_id}`\n```\n{excerpt}\n```",
+                parse_mode="Markdown"
             )
         except Exception:
             pass

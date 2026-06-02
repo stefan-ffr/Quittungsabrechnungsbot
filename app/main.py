@@ -28,12 +28,19 @@ async def run_bot():
 
 
 def main():
+    import os
+    level_name = os.getenv("LOG_LEVEL", "DEBUG").upper()
+    level = getattr(logging, level_name, logging.DEBUG)
     logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        level=level,
+        format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
     )
+    # Telegram-Polling-Spam abmildern
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("telegram.ext.Application").setLevel(logging.INFO)
     db.init_db()
-    log.info(f"Datenbank: {DATABASE_PATH}")
+    log.info(f"Bot startet — log-level={level_name}, DB={DATABASE_PATH}")
     asyncio.run(run_bot())
 
 
