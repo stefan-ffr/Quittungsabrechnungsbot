@@ -1788,22 +1788,31 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if session.get("stage") == "posten_desc":
         session.update({"posten_desc": text, "stage": "posten_amount"})
         sessions[chat_id] = session
-        await _reply(update, ctx, f"📝 *{text}*\n\n💰 Betrag eingeben (z.B. `25.50`):")
+        await _reply(update, ctx, f"📝 *{text}*\n\n💰 Betrag eingeben (z.B. `25.50` oder `1200 THB`, `100 EUR`, `12 USD`).\nOhne Angabe: Default {CURRENCY}.")
         return
 
-    # ── Manueller Posten: Betrag
+    # ── Manueller Posten: Betrag (optional + Währung, z.B. "1200 THB")
     if session.get("stage") == "posten_amount":
+        import re as _re
+        m = _re.fullmatch(r"\s*(\d+(?:[.,]\d+)?)\s*([A-Za-z]{3})?\s*", text)
+        if not m:
+            await update.message.reply_text(
+                "❌ Bitte Betrag eingeben — z.B. `25.50`, `1200 THB`, `100 EUR`:",
+                parse_mode="Markdown")
+            return
         try:
-            amount = float(raw)
+            amount = float(m.group(1).replace(",", "."))
             if amount <= 0:
                 raise ValueError
         except ValueError:
-            await update.message.reply_text("❌ Bitte gueltigen Betrag eingeben (z.B. `25.50`):",
-                                            parse_mode="Markdown")
+            await update.message.reply_text(
+                "❌ Ungültiger Betrag. Beispiele: `25.50`, `1200 THB`:",
+                parse_mode="Markdown")
             return
+        currency = (m.group(2) or CURRENCY).upper()
         desc = session.get("posten_desc", "Posten")
         receipt_id = db.save_receipt(
-            store=desc, date="", total=amount, currency=CURRENCY,
+            store=desc, date="", total=amount, currency=currency,
             note="manuell", file_path="", payer_id=None, my_share=0.0,
             group_id=gid,
         )
@@ -1812,7 +1821,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "stage": "payer_select",
             "receipt_id": receipt_id,
             "items": [{"id": item_ids[0], "description": desc, "amount": amount, "quantity": 1}],
-            "data": {"currency": CURRENCY, "total": amount},
+            "data": {"currency": currency, "total": amount},
         })
         sessions[chat_id] = session
         persons = db.get_persons(gid)
@@ -1823,7 +1832,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kbd.append([InlineKeyboardButton("➕ Person hinzufügen", callback_data="inline_add_person")])
         kbd.append([InlineKeyboardButton("❌ Abbrechen", callback_data="cancel")])
         await _reply(update, ctx,
-            f"➕ *{desc}* – {CURRENCY} {amount:.2f}\n\n❓ *Wer hat gezahlt?*",
+            f"➕ *{desc}* – {currency} {amount:.2f}\n\n❓ *Wer hat gezahlt?*",
             inline=InlineKeyboardMarkup(kbd))
         return
 
