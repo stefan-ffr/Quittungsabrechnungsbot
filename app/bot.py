@@ -1617,9 +1617,13 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "posten":     cmd_posten,
             "saldo":      cmd_saldo,
             "detail":     cmd_detail,
+            "verlauf":    cmd_verlauf,
             "quittungen": cmd_quittungen,
             "personen":   cmd_personen,
             "gruppe":     cmd_gruppe,
+            "projekte":   cmd_projekte,
+            "loeschen":   cmd_loeschen,
+            "users":      cmd_users,
             "abbrechen":  cmd_abbrechen,
         }
         if cmd in handlers:
