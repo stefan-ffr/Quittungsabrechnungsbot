@@ -673,6 +673,28 @@ def delete_cash_transfer(transfer_id: int) -> None:
     conn.close()
 
 
+
+def get_group_currency(group_id: int) -> str:
+    """Häufigste Währung der Quittungen in einer Gruppe (Default CHF)."""
+    conn = get_conn()
+    r = conn.execute(
+        """SELECT currency, COUNT(*) AS n FROM receipts
+            WHERE group_id=? GROUP BY currency ORDER BY n DESC LIMIT 1""",
+        (group_id,)).fetchone()
+    conn.close()
+    return r["currency"] if r and r["currency"] else "CHF"
+
+
+def get_group_currencies(group_id: int) -> list[str]:
+    """Alle Währungen die in einer Gruppe vorkommen."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT DISTINCT currency FROM receipts WHERE group_id=? AND currency IS NOT NULL ORDER BY currency",
+        (group_id,)).fetchall()
+    conn.close()
+    return [r["currency"] for r in rows]
+
+
 # ── Balances ──────────────────────────────────────────────────────────────────
 
 def get_balances(my_person_id: Optional[int] = None,
