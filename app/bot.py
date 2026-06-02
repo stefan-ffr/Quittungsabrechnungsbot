@@ -689,12 +689,23 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Zuweisung Keyboards ───────────────────────────────────────────────────────
 
-def _assign_start_kbd(payer_is_me: bool, group_id: int | None = None) -> InlineKeyboardMarkup:
+def _assign_start_kbd(payer_is_me: bool, group_id: int | None = None,
+                       chat_id: int | None = None) -> InlineKeyboardMarkup:
     persons = db.get_persons(group_id)
-    rows = [[InlineKeyboardButton(
+    my_pid = _my_person_id(chat_id, group_id) if chat_id else None
+    rows = []
+    # Self-assign zuerst — prominent
+    if my_pid is not None:
+        rows.append([InlineKeyboardButton(
+            "👤 Alles -> ICH (komplett selbst)" if payer_is_me else "👤 Alles konsumiert: ICH",
+            callback_data=f"assign_one:{my_pid}"
+        )])
+    rows.append([InlineKeyboardButton(
         "👥 Personen waehlen (gleich aufteilen)", callback_data="assign_pick_all"
-    )]]
+    )])
     for p in persons:
+        if p["id"] == my_pid:
+            continue  # bereits oben als "ICH"
         label = f"Alles -> {p['name']}" if payer_is_me else f"Alles konsumiert: {p['name']}"
         rows.append([InlineKeyboardButton(label, callback_data=f"assign_one:{p['id']}")])
     rows.append([InlineKeyboardButton("➕ Person hinzufügen", callback_data="inline_add_person")])
@@ -1079,7 +1090,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             sessions[chat_id] = session
             await query.edit_message_text(
                 f"✅ Du hast gezahlt ({cur} {total:.2f}).\n\n*Wem werden die Kosten zugewiesen?*",
-                reply_markup=_assign_start_kbd(payer_is_me=True, group_id=gid),
+                reply_markup=_assign_start_kbd(payer_is_me=True, group_id=gid, chat_id=chat_id),
                 parse_mode="Markdown"
             )
         else:
@@ -1092,7 +1103,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"💳 *{pname}* hat {cur} {total:.2f} gezahlt.\n\n"
                 f"*Wem werden die Kosten zugewiesen?*\n"
                 f"_(Was nicht zugewiesen wird = dein Anteil)_",
-                reply_markup=_assign_start_kbd(payer_is_me=False, group_id=gid),
+                reply_markup=_assign_start_kbd(payer_is_me=False, group_id=gid, chat_id=chat_id),
                 parse_mode="Markdown"
             )
         return
@@ -1311,7 +1322,7 @@ async def _rebuild_person_keyboard(ctx: ContextTypes.DEFAULT_TYPE,
     elif stage == "assign_method":
         payer_is_me = session.get("payer_id") is None
         await _send(ctx, chat_id, "*Wem werden die Kosten zugewiesen?*",
-                    inline=_assign_start_kbd(payer_is_me=payer_is_me, group_id=gid))
+                    inline=_assign_start_kbd(payer_is_me=payer_is_me, group_id=gid, chat_id=chat_id))
 
     elif stage == "pick_all":
         selected = session.get("selected_all", [])
