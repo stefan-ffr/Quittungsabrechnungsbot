@@ -452,27 +452,33 @@ async def cmd_saldo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _auth(update): return
     gid = await _ensure_group(update, ctx)
     if gid is None: return
+    cur = db.get_group_currency(gid)
+    all_curs = db.get_group_currencies(gid)
     balances = db.get_balances(_my_person_id(update.effective_chat.id, gid), gid)
     gname = _group_name(gid)
     if not balances:
         await _reply(update, ctx,
             f"📂 {gname}\n\nKeine Daten.\n/person_add [Name]", set_active=False)
         return
-    lines = [f"📂 {gname}\n💰 *Aktuelle Salden:*\n"]
+    header = f"📂 {gname}\n💰 *Aktuelle Salden:*\n"
+    if len(all_curs) > 1:
+        header += (f"⚠️ Mehrere Währungen: {', '.join(all_curs)} — "
+                   f"Saldo in {cur} ist eine NAIVE Aggregation (keine Forex-Umrechnung).\n\n")
+    lines = [header]
     for b in balances:
-        lines.append(_fmt_balance(b))
+        lines.append(_fmt_balance(b, cur))
         details = []
-        if b["owed_me"] > 0:  details.append(f"Quitt. von dir: +{CURRENCY} {b['owed_me']:.2f}")
-        if b["i_owe"] > 0:    details.append(f"Quitt. von ihnen: -{CURRENCY} {b['i_owe']:.2f}")
-        if b["received"] > 0: details.append(f"Erhalten: -{CURRENCY} {b['received']:.2f}")
-        if b["paid"] > 0:     details.append(f"Gegeben: +{CURRENCY} {b['paid']:.2f}")
+        if b["owed_me"] > 0:  details.append(f"Quitt. von dir: +{cur} {b['owed_me']:.2f}")
+        if b["i_owe"] > 0:    details.append(f"Quitt. von ihnen: -{cur} {b['i_owe']:.2f}")
+        if b["received"] > 0: details.append(f"Erhalten: -{cur} {b['received']:.2f}")
+        if b["paid"] > 0:     details.append(f"Gegeben: +{cur} {b['paid']:.2f}")
         if details:
             lines.append("   ↳ " + " | ".join(details))
     total_mir = sum(b["balance"] for b in balances if b["balance"] > 0)
     total_ich = sum(abs(b["balance"]) for b in balances if b["balance"] < 0)
-    lines.append(f"\n📊 Offen (an mich): {CURRENCY} {total_mir:.2f}")
+    lines.append(f"\n📊 Offen (an mich): {cur} {total_mir:.2f}")
     if total_ich > 0:
-        lines.append(f"📊 Meine Schulden:  {CURRENCY} {total_ich:.2f}")
+        lines.append(f"📊 Meine Schulden:  {cur} {total_ich:.2f}")
     rows = [[InlineKeyboardButton(f"📋 {b['name']}", callback_data=f"detail:{b['id']}")]
             for b in balances]
     await _reply(update, ctx, "\n".join(lines),
