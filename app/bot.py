@@ -168,14 +168,15 @@ def _simple_persons_kbd(callback_prefix: str,
     return InlineKeyboardMarkup(rows)
 
 
-def _fmt_balance(b: dict) -> str:
+def _fmt_balance(b: dict, cur: str | None = None) -> str:
     bal = b["balance"]
+    c = cur or CURRENCY
     if abs(bal) < 0.01:
         return f"⚪ *{b['name']}* – quitt"
     elif bal > 0:
-        return f"🔴 *{b['name']}* – schuldet mir {CURRENCY} {bal:.2f}"
+        return f"🔴 *{b['name']}* – schuldet mir {c} {bal:.2f}"
     else:
-        return f"🟢 *{b['name']}* – ich schulde {CURRENCY} {abs(bal):.2f}"
+        return f"🟢 *{b['name']}* – ich schulde {c} {abs(bal):.2f}"
 
 
 
