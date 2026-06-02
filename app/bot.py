@@ -63,12 +63,22 @@ def _group_name(group_id: int | None) -> str:
 
 # ── Reply-Keyboards ───────────────────────────────────────────────────────────
 
+_KBD_IDLE_ROWS = [
+    [KeyboardButton("💸 Zahlung buchen"), KeyboardButton("➕ Posten")],
+    [KeyboardButton("💰 Saldo"),          KeyboardButton("🧾 Quittungen")],
+    [KeyboardButton("📋 Kontoauszug"),    KeyboardButton("📜 Verlauf")],
+    [KeyboardButton("👥 Personen"),        KeyboardButton("📂 Gruppe")],
+    [KeyboardButton("📁 Projekte"),        KeyboardButton("↩️ Rückgängig")],
+]
+
 KBD_IDLE = ReplyKeyboardMarkup(
-    [
-        [KeyboardButton("💸 Zahlung buchen"), KeyboardButton("➕ Posten")],
-        [KeyboardButton("💰 Saldo"),          KeyboardButton("🧾 Quittungen")],
-        [KeyboardButton("👥 Personen"),        KeyboardButton("📂 Gruppe")],
-    ],
+    _KBD_IDLE_ROWS,
+    resize_keyboard=True,
+    is_persistent=True,
+)
+
+KBD_IDLE_ADMIN = ReplyKeyboardMarkup(
+    _KBD_IDLE_ROWS + [[KeyboardButton("👑 Users")]],
     resize_keyboard=True,
     is_persistent=True,
 )
@@ -84,8 +94,12 @@ async def _set_kbd(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, active: bool):
     ctx.chat_data["kbd_active"] = active
 
 
-def _kbd(ctx: ContextTypes.DEFAULT_TYPE) -> ReplyKeyboardMarkup:
-    return KBD_ACTIVE if ctx.chat_data.get("kbd_active") else KBD_IDLE
+def _kbd(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int | None = None) -> ReplyKeyboardMarkup:
+    if ctx.chat_data.get("kbd_active"):
+        return KBD_ACTIVE
+    if chat_id is not None and _is_admin(chat_id):
+        return KBD_IDLE_ADMIN
+    return KBD_IDLE
 
 
 async def _reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
@@ -93,7 +107,7 @@ async def _reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
                  set_active: bool | None = None):
     if set_active is not None:
         ctx.chat_data["kbd_active"] = set_active
-    kbd = _kbd(ctx)
+    kbd = _kbd(ctx, update.effective_chat.id if update and update.effective_chat else None)
 
     if inline:
         await update.message.reply_text(text, reply_markup=kbd, parse_mode="Markdown")
@@ -107,7 +121,7 @@ async def _send(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int,
                 inline: InlineKeyboardMarkup | None = None):
     if set_active is not None:
         ctx.chat_data["kbd_active"] = set_active
-    kbd = _kbd(ctx)
+    kbd = _kbd(ctx, update.effective_chat.id if update and update.effective_chat else None)
 
     if inline:
         await ctx.bot.send_message(chat_id, text, reply_markup=kbd, parse_mode="Markdown")
@@ -171,9 +185,13 @@ REPLY_TRIGGERS = {
     "➕ Posten":         "posten",
     "💰 Saldo":          "saldo",
     "📋 Kontoauszug":    "detail",
+    "📜 Verlauf":        "verlauf",
     "🧾 Quittungen":     "quittungen",
     "👥 Personen":       "personen",
     "📂 Gruppe":         "gruppe",
+    "📁 Projekte":       "projekte",
+    "↩️ Rückgängig":     "loeschen",
+    "👑 Users":          "users",
     "❌ Abbrechen":      "abbrechen",
 }
 
