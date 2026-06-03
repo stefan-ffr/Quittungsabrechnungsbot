@@ -43,15 +43,38 @@ def _norm_date(value: Optional[str], fallback: Optional[str] = None) -> str:
     return date.today().isoformat()
 
 
-def build_transactions(group_id: Optional[int]) -> list[dict]:
+def build_transactions(group_id: Optional[int], my_person_id: Optional[int] = None) -> list[dict]:
+    """Build the user's own transactions for a group.
+
+    The user's share of a receipt is the sum of item assignments to the chat's
+    own person (``my_person_id``). The ``receipts.my_share`` column is not used
+    (it is not populated in the item-assignment flow); it is only a fallback
+    when no person is supplied.
+    """
     transactions: list[dict] = []
-    for r in db.get_receipts(limit=1000, group_id=group_id):
-        my_share = r["my_share"] or 0
-        if my_share <= 0:
-            continue
+
+    if my_person_id is not None:
+        conn = db.get_conn()
+        rows = conn.execute(
+            """SELECT r.id AS id, r.store AS store, r.date AS date,
+                      r.uploaded_at AS uploaded_at, r.currency AS currency,
+                      ROUND(COALESCE(SUM(ia.share_amount), 0), 2) AS my_share
+               FROM receipts r
+               JOIN items i ON i.receipt_id = r.id
+               JOIN item_assignments ia ON ia.item_id = i.id AND ia.person_id = ?
+               WHERE r.group_id = ?
+               GROUP BY r.id
+               HAVING my_share > 0""",
+            (my_person_id, group_id),
+        ).fetchall()
+        conn.close()
+    else:
+        rows = [r for r in db.get_receipts(limit=1000, group_id=group_id) if (r["my_share"] or 0) > 0]
+
+    for r in rows:
         transactions.append({
             "date": _norm_date(r["date"], r["uploaded_at"]),
-            "amount": -round(float(my_share), 2),
+            "amount": -round(float(r["my_share"]), 2),
             "description": (r["store"] or "Quittung"),
             "category": "Quittung",
             "currency": r["currency"] or CURRENCY,
@@ -88,8 +111,16 @@ async def push(transactions: list[dict], chat_id: Optional[int]) -> dict:
         return resp.json()
 
 
+def _my_person_id(chat_id: Optional[int], group_id: Optional[int]) -> Optional[int]:
+    """The chat's own person in a group (whose item shares are the user's)."""
+    if chat_id is None:
+        return None
+    p = db.get_person_by_chat(chat_id, group_id)
+    return p["id"] if p else None
+
+
 async def sync_group(group_id: Optional[int], chat_id: Optional[int]) -> dict:
-    return await push(build_transactions(group_id), chat_id)
+    return await push(build_transactions(group_id, _my_person_id(chat_id, group_id)), chat_id)
 
 
 async def sync_all_for_user(chat_id: int) -> dict:
@@ -97,7 +128,7 @@ async def sync_all_for_user(chat_id: int) -> dict:
     groups = db.get_groups_for_chat(chat_id)
     transactions: list[dict] = []
     for g in groups:
-        transactions.extend(build_transactions(g["id"]))
+        transactions.extend(build_transactions(g["id"], _my_person_id(chat_id, g["id"])))
     result = await push(transactions, chat_id)
     result["groups"] = len(groups)
     return result
