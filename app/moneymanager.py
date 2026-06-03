@@ -64,7 +64,7 @@ def build_transactions(group_id: Optional[int], my_person_id: Optional[int] = No
                JOIN item_assignments ia ON ia.item_id = i.id AND ia.person_id = ?
                WHERE r.group_id = ?
                GROUP BY r.id
-               HAVING my_share > 0""",
+               HAVING SUM(ia.share_amount) > 0""",
             (my_person_id, group_id),
         ).fetchall()
         conn.close()
