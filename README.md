@@ -23,6 +23,7 @@ Telegram-Bot zur Quittungserfassung per Foto/PDF mit KI-gestützter Positionserk
 | `/detail [Name]` | Kontoauszug einer Person |
 | `/verlauf` | Letzte Zahlungen |
 | `/quittungen` | Letzte Quittungen |
+| `/sync_money` | Eigene Transaktionen an Money Manager senden |
 | `/personen` | Alle Personen & Salden |
 | `/person_add [Name]` | Person hinzufügen |
 | `/person_del [Name]` | Person entfernen |
@@ -83,6 +84,34 @@ docker compose up -d
 | `ANTHROPIC_API_KEY` | API Key von [Anthropic](https://console.anthropic.com/) |
 | `OPENROUTER_API_KEY` | API Key von [OpenRouter](https://openrouter.ai/keys) |
 | `AI_MODEL` | Modell-Override (optional, z.B. `anthropic/claude-sonnet-4` für OpenRouter) |
+
+### Money Manager (optional)
+
+| Variable | Beschreibung |
+|---|---|
+| `MONEY_MANAGER_URL` | Basis-URL der Money-Manager-Instanz, z.B. `https://money.example.ch` |
+| `MONEY_MANAGER_API_KEY` | API-Key (Money Manager → Einstellungen → Integrationen) |
+| `CURRENCY` | Standardwährung für Ausgleichszahlungen (Default `CHF`) |
+
+## Money Manager Integration
+
+Optional kann der Bot seine Abrechnungen an einen
+[Money Manager](https://github.com/stefan-ffr/money-manager) schicken. Der Bot bleibt die
+Quelle für die detaillierte Personen-/Positions-Aufteilung; gespiegelt werden nur die
+**eigenen** Geldflüsse in ein dediziertes Konto **„Quittungsabrechnung"**.
+
+1. In Money Manager unter **Einstellungen → Integrationen** einen API-Key erstellen.
+2. `MONEY_MANAGER_URL` und `MONEY_MANAGER_API_KEY` in der `.env` setzen, Bot neu starten.
+3. Im Chat **`/sync_money`** ausführen – sendet die Transaktionen der aktiven Gruppe.
+
+Der Push ist **idempotent** (über `external_ref`), wiederholtes Synchronisieren erzeugt also
+keine Doppelbuchungen. Mapping (eigene Sicht):
+
+| Bot | Money Manager |
+|---|---|
+| Quittung (eigener Anteil) | Ausgabe `-my_share`, `external_ref=receipt-<id>` |
+| Ausgleich „erhalten" | Einnahme `+Betrag`, `external_ref=transfer-<id>` |
+| Ausgleich „gegeben" | Ausgabe `-Betrag`, `external_ref=transfer-<id>` |
 
 ## Stack
 
