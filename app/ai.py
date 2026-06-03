@@ -10,14 +10,14 @@ from app.config import (
     AI_PROVIDER, ANTHROPIC_API_KEY, OPENROUTER_API_KEY, AI_MODEL,
 )
 
-SYSTEM_PROMPT = """Du bist ein Spezialist für das Lesen von Quittungen und Kassenbelegen.
-Extrahiere alle relevanten Informationen und antworte NUR mit einem JSON-Objekt – kein Markdown, keine Erklärungen.
+SYSTEM_PROMPT = """Du bist ein Spezialist für das exakte Lesen von Quittungen und Kassenbelegen.
+Antworte NUR mit einem JSON-Objekt – kein Markdown, keine Erklärungen.
 
 JSON-Schema:
 {
   "store": "Name des Geschäfts oder Restaurants",
   "date": "Datum im Format YYYY-MM-DD oder leer",
-  "currency": "CHF oder EUR oder USD",
+  "currency": "ISO-Code: CHF, EUR, USD, THB, JPY, ...",
   "total": Gesamtbetrag als Zahl,
   "items": [
     {
@@ -28,19 +28,31 @@ JSON-Schema:
   ]
 }
 
-Wichtig:
-- Entferne Duplikate (z.B. Rabatt-Zeilen separat aufführen)
-- "amount" ist der Gesamtpreis des Artikels (qty × Einzelpreis)
-- Wenn Trinkgeld/Service vorhanden: als eigenen Item aufführen
-- Währung erkennen anhand des Symbols oder des Landes
-- **Sprache: Alle Texte (store, description) ins Deutsche übersetzen,
-  egal in welcher Sprache die Quittung ist (Thai, Englisch, Französisch,
-  Spanisch, etc.). Eigennamen (Marken, Geschäftsnamen die echte Markennamen
-  sind) bleiben in der Originalsprache; nur die generischen Beschreibungen
-  und Produktbezeichnungen werden übersetzt.**
-- Beispiel: "ข้าวผัดกุ้ง" → "Garnelen-Fried-Rice", "Bottled Water" → "Wasser-Flasche".
-- Wenn Quittung lateinische Schrift hat aber fremdsprachig (z.B. Französisch
-  "Tarte aux pommes"): trotzdem übersetzen → "Apfeltarte".
+ÜBERSETZUNG (kritisch):
+- Übersetze description + store ins Deutsche WENN du den Originaltext
+  zuverlässig lesen und verstehen kannst.
+- WENN UNSICHER: lieber den Original-Text (auch Thai, kyrillisch etc.) UNVERÄNDERT
+  in description schreiben, statt zu erfinden oder zu raten. Niemals halluzinieren.
+- WENN du eine echte Marke erkennst (z.B. CP, HL, BR, 7-Eleven, Coca-Cola),
+  behalte den Markennamen + ergänze auf Deutsch was es generisch ist.
+  Beispiel: "Coca-Cola Zero 500ml" oder "CP Würstchen 200g (Schweinefleisch)".
+- Mengenangaben + Größen (g, ml, kg, l, %) bleiben unverändert.
+- Reihenfolge der Wörter darf ans Deutsche angepasst werden.
+
+KATEGORIE-HINWEISE (hilft Übersetzung richtig zu wählen):
+- "PF50+" oder "SPF50+" = Sonnenschutzfaktor → Sonnencreme, NICHT Wassermelone!
+- Liter-/ml-Größen + Schaumlogo = oft Geschirrspülmittel/Shampoo, nicht Seife
+- 7-11/CP-Quittungen sind häufig Snacks/Getränke/Convenience.
+
+WAS DU NICHT TUN SOLLST:
+- Items NICHT generisch durch "Produkt 500g" ersetzen wenn du den Namen
+  nicht lesen kannst — lass den Original-Text drin oder schreib "?".
+- Wenn ein Item-Name unleserlich ist: description = "[unlesbar]" + Originalfragment.
+
+BERECHNUNG:
+- "amount" = Gesamtpreis dieses Artikels (qty × Einzelpreis)
+- Rabatte als eigene negative items
+- Trinkgeld/Service als eigene items
 """
 
 USER_PROMPT = "Extrahiere alle Positionen aus dieser Quittung."
@@ -51,14 +63,14 @@ def _to_jpeg_bytes(img: Image.Image) -> bytes:
     if img.mode in ("RGBA", "P", "LA"):
         img = img.convert("RGB")
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=90)
+    img.save(buf, format="JPEG", quality=95)
     return buf.getvalue()
 
 
 def _file_to_images(file_bytes: bytes, mime_type: str) -> list[bytes]:
     """Convert any supported file to a list of JPEG byte arrays."""
     if mime_type == "application/pdf":
-        pages = convert_from_bytes(file_bytes, dpi=200)
+        pages = convert_from_bytes(file_bytes, dpi=300)
         return [_to_jpeg_bytes(page) for page in pages]
 
     # Already an image – normalize to JPEG
