@@ -605,12 +605,10 @@ async def cmd_sync_money(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "Nutze /mm_setup um URL + API-Key zu hinterlegen.",
             set_active=False)
         return
-    gid = await _ensure_group(update, ctx)
-    if gid is None: return
-
-    await _reply(update, ctx, "⏳ Sende an Money Manager …", set_active=False)
+    # Default: alle Gruppen wo der User Mitglied ist
+    await _reply(update, ctx, "⏳ Sende alle deine Gruppen an Money Manager …", set_active=False)
     try:
-        result = await mm.sync_group(gid, chat_id)
+        result = await mm.sync_all_for_user(chat_id)
     except Exception as e:
         log.exception("Money Manager sync failed")
         await _reply(update, ctx, f"❌ Sync fehlgeschlagen: {e}", set_active=False)
@@ -618,7 +616,8 @@ async def cmd_sync_money(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await _reply(update, ctx,
         f"✅ *Money Manager synchronisiert*\n"
-        f"Neu gebucht: {result.get('created', 0)} · "
+        f"Gruppen: {result.get('groups', 0)} · "
+        f"Neu: {result.get('created', 0)} · "
         f"Übersprungen: {result.get('skipped', 0)}",
         set_active=False)
 

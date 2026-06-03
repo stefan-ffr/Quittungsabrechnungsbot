@@ -92,6 +92,17 @@ async def sync_group(group_id: Optional[int], chat_id: Optional[int]) -> dict:
     return await push(build_transactions(group_id), chat_id)
 
 
+async def sync_all_for_user(chat_id: int) -> dict:
+    """Sync all groups the user is a member of in one push (idempotent)."""
+    groups = db.get_groups_for_chat(chat_id)
+    transactions: list[dict] = []
+    for g in groups:
+        transactions.extend(build_transactions(g["id"]))
+    result = await push(transactions, chat_id)
+    result["groups"] = len(groups)
+    return result
+
+
 async def test_connection(chat_id: int) -> tuple[bool, str]:
     """Pingt die Money-Manager-Instanz mit einer leeren Transaction-Liste."""
     cfg = _resolve_config(chat_id)
