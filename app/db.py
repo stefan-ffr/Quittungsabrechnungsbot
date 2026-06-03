@@ -94,6 +94,13 @@ def init_db() -> None:
             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS user_money_manager (
+            chat_id    INTEGER PRIMARY KEY,
+            url        TEXT NOT NULL,
+            api_key    TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
         CREATE TABLE IF NOT EXISTS allowed_chats (
             chat_id     INTEGER PRIMARY KEY,
             name        TEXT,
@@ -974,6 +981,36 @@ def get_project_items(project_id: int, limit: int = 100) -> list[dict]:
             LIMIT ?""", (project_id, limit)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+
+
+# ── per-user Money-Manager-Config ────────────────────────────────────────────
+
+def set_money_manager(chat_id: int, url: str, api_key: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO user_money_manager(chat_id, url, api_key) VALUES(?,?,?) "
+        "ON CONFLICT(chat_id) DO UPDATE SET url=excluded.url, api_key=excluded.api_key",
+        (chat_id, url.strip().rstrip("/"), api_key.strip()))
+    conn.commit()
+    conn.close()
+
+
+def get_money_manager(chat_id: int) -> Optional[dict]:
+    conn = get_conn()
+    r = conn.execute(
+        "SELECT url, api_key FROM user_money_manager WHERE chat_id=?",
+        (chat_id,)).fetchone()
+    conn.close()
+    return dict(r) if r else None
+
+
+def delete_money_manager(chat_id: int) -> None:
+    conn = get_conn()
+    conn.execute("DELETE FROM user_money_manager WHERE chat_id=?", (chat_id,))
+    conn.commit()
+    conn.close()
 
 
 def ensure_user_has_group(chat_id: int, default_name: Optional[str] = None) -> Optional[int]:

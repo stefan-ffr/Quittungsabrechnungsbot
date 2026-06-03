@@ -20,6 +20,7 @@ from telegram.ext import (
 )
 
 from app.config import TELEGRAM_TOKEN, ALLOWED_CHAT_IDS, UPLOAD_PATH
+from app.config import MONEY_MANAGER_URL, MONEY_MANAGER_API_KEY
 import app.db as db
 import app.ai as ai
 import app.moneymanager as mm
@@ -595,12 +596,13 @@ async def cmd_quittungen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 @_log_action("cmd_sync_money")
 async def cmd_sync_money(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Push the active group's receipt/settlement transactions to Money Manager."""
+    """Push the active group's transactions to the user's Money Manager."""
     if not _auth(update): return
-    if not mm.enabled():
+    chat_id = update.effective_chat.id
+    if not mm.enabled(chat_id):
         await _reply(update, ctx,
-            "ℹ️ *Money Manager* ist nicht konfiguriert.\n"
-            "Setze `MONEY_MANAGER_URL` und `MONEY_MANAGER_API_KEY` in der `.env`.",
+            "ℹ️ *Money Manager* ist für deinen Account nicht konfiguriert.\n"
+            "Nutze /mm_setup um URL + API-Key zu hinterlegen.",
             set_active=False)
         return
     gid = await _ensure_group(update, ctx)
@@ -608,7 +610,7 @@ async def cmd_sync_money(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await _reply(update, ctx, "⏳ Sende an Money Manager …", set_active=False)
     try:
-        result = await mm.sync_group(gid)
+        result = await mm.sync_group(gid, chat_id)
     except Exception as e:
         log.exception("Money Manager sync failed")
         await _reply(update, ctx, f"❌ Sync fehlgeschlagen: {e}", set_active=False)
@@ -619,6 +621,50 @@ async def cmd_sync_money(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Neu gebucht: {result.get('created', 0)} · "
         f"Übersprungen: {result.get('skipped', 0)}",
         set_active=False)
+
+
+@_log_action("cmd_mm_setup")
+async def cmd_mm_setup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Setup Wizard: fragt URL + API-Key in 2 Schritten."""
+    if not _auth(update): return
+    chat_id = update.effective_chat.id
+    sessions[chat_id] = {"stage": "mm_setup_url"}
+    existing = db.get_money_manager(chat_id)
+    hint = f"\n_Aktuell: {existing['url']}_" if existing else ""
+    await _reply(update, ctx,
+        "🔧 *Money Manager Setup (1/2)*\n\n"
+        "Schick mir die *Base-URL* (z.B. `https://money.juroct.net`)" + hint,
+        set_active=True)
+
+
+@_log_action("cmd_mm_status")
+async def cmd_mm_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _auth(update): return
+    chat_id = update.effective_chat.id
+    cfg = db.get_money_manager(chat_id)
+    if not cfg:
+        if MONEY_MANAGER_URL and MONEY_MANAGER_API_KEY:
+            await _reply(update, ctx,
+                f"ℹ️ Nutzt globalen Fallback aus .env:\n`{MONEY_MANAGER_URL}`")
+        else:
+            await _reply(update, ctx,
+                "❌ Money Manager nicht konfiguriert.\n/mm_setup um einzurichten.")
+        return
+    await _reply(update, ctx, f"🔧 *Money Manager Konfiguration*\n\n"
+                              f"URL: `{cfg['url']}`\n"
+                              f"API-Key: `{cfg['api_key'][:8]}…{cfg['api_key'][-4:]}`")
+    # Test
+    ok, msg = await mm.test_connection(chat_id)
+    icon = "✅" if ok else "❌"
+    await _reply(update, ctx, f"{icon} Test: {msg}")
+
+
+@_log_action("cmd_mm_remove")
+async def cmd_mm_remove(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _auth(update): return
+    chat_id = update.effective_chat.id
+    db.delete_money_manager(chat_id)
+    await _reply(update, ctx, "🗑️ Money Manager Konfiguration entfernt.")
 
 
 @_log_action("cmd_geld")
@@ -1744,6 +1790,38 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     raw     = text.replace(",", ".")
     gid     = _active_group(chat_id)
 
+    # ── MM Setup: URL
+    if session.get("stage") == "mm_setup_url":
+        url = text.strip()
+        if not url.startswith(("http://", "https://")):
+            await _reply(update, ctx, "❌ URL muss mit `http://` oder `https://` starten:")
+            return
+        session.update({"mm_url": url, "stage": "mm_setup_apikey"})
+        sessions[chat_id] = session
+        await _reply(update, ctx,
+            "🔧 *Money Manager Setup (2/2)*\n\n"
+            "Schick mir den *API-Key* (in Money Manager → Einstellungen → Integrationen erstellen):",
+            set_active=True)
+        return
+
+    # ── MM Setup: API-Key
+    if session.get("stage") == "mm_setup_apikey":
+        api_key = text.strip()
+        url = session.get("mm_url")
+        if not api_key:
+            await _reply(update, ctx, "❌ Key darf nicht leer sein.")
+            return
+        db.set_money_manager(chat_id, url, api_key)
+        sessions.pop(chat_id, None)
+        await _reply(update, ctx,
+            f"✅ *Money Manager konfiguriert*\n`{url}`\n\n"
+            "Teste mit /mm_status, synchronisiere mit /sync_money.",
+            set_active=False)
+        # Auto-test
+        ok, msg = await mm.test_connection(chat_id)
+        await _reply(update, ctx, f"{'✅' if ok else '⚠️'} Test: {msg}", set_active=False)
+        return
+
     # ── Projekt anlegen: name
     if session.get("stage") == "project_add_name":
         name = text.strip()
@@ -2130,6 +2208,9 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("abbrechen",  cmd_abbrechen))
     app.add_handler(CommandHandler("gruppe",     cmd_gruppe))
     app.add_handler(CommandHandler("projekte",   cmd_projekte))
+    app.add_handler(CommandHandler("mm_setup",   cmd_mm_setup))
+    app.add_handler(CommandHandler("mm_status",  cmd_mm_status))
+    app.add_handler(CommandHandler("mm_remove",  cmd_mm_remove))
     app.add_handler(CommandHandler("users",      cmd_users))
     app.add_handler(CommandHandler("revoke",     cmd_revoke))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_file))
@@ -2154,6 +2235,9 @@ async def set_commands(app: Application):
         BotCommand("person_del", "Person entfernen"),
         BotCommand("loeschen",   "Letzten Eintrag rueckgaengig"),
         BotCommand("projekte",   "📁 Projekte verwalten"),
+        BotCommand("mm_setup",   "🔧 Money Manager einrichten"),
+        BotCommand("mm_status",  "ℹ️ MM Status / Test"),
+        BotCommand("mm_remove",  "🗑 MM Konfig löschen"),
         BotCommand("abbrechen",  "Eingabe abbrechen"),
         BotCommand("users",      "👥 User-Verwaltung (Admin)"),
         BotCommand("revoke",     "🚫 User sperren (Admin)"),
