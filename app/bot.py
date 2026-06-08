@@ -18,6 +18,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters,
 )
+from telegram.request import HTTPXRequest
 
 from app.config import TELEGRAM_TOKEN, ALLOWED_CHAT_IDS, UPLOAD_PATH
 from app.config import MONEY_MANAGER_URL, MONEY_MANAGER_API_KEY
@@ -2190,7 +2191,17 @@ async def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 def build_application() -> Application:
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    # PTB defaults sind 5s — bei ~200ms RTT zu Telegram aus TH zu knapp,
+    # speziell für sendMessage mit größeren Payloads / Foto-Uploads
+    req = HTTPXRequest(connect_timeout=15, read_timeout=30, write_timeout=30, pool_timeout=10)
+    upd_req = HTTPXRequest(connect_timeout=15, read_timeout=40, write_timeout=30, pool_timeout=10)
+    app = (
+        Application.builder()
+        .token(TELEGRAM_TOKEN)
+        .request(req)
+        .get_updates_request(upd_req)
+        .build()
+    )
     app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("start",      cmd_start))
     app.add_handler(CommandHandler("personen",   cmd_personen))
